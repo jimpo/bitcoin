@@ -617,9 +617,13 @@ public:
     CCriticalSection cs_SubVer; // used for both cleanSubVer and strSubVer
     bool fWhitelisted; // This peer can bypass DoS banning.
     bool fFeeler; // If true this node is being used as a short lived feeler.
+    // fOneShot indicates a connection to a seed node. We just query the peer for addresses, then
+    // disconnect.
     bool fOneShot;
+    // addnode peers are configured, persistent connections. They do not count towards the outbound
+    // connection limit and will not be banned for misbehaving.
     bool fAddnode;
-    bool fClient;
+    bool fClient; // The peer is a light/SPV client, not a full node
     const bool fInbound;
     std::atomic_bool fSuccessfullyConnected;
     std::atomic_bool fDisconnect;

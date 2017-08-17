@@ -761,7 +761,16 @@ public:
     {
         return nRecvVersion;
     }
+
+    /**
+     * May only be set once. Expected to be set when VERSION message is received.
+     */
     void SetSendVersion(int nVersionIn);
+
+    /**
+     * outgoing message serialization version
+     * Protocol version to use for sent messages.
+     */
     int GetSendVersion() const;
 
     CService GetAddrLocal() const;

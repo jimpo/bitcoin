@@ -2630,6 +2630,9 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
     return true;
 }
 
+/**
+ * We want to get the rejects out before disconnecting as a sort of reason.
+ */
 static bool SendRejectsAndCheckIfBanned(CNode* pnode, CConnman& connman)
 {
     AssertLockHeld(cs_main);
@@ -2837,7 +2840,7 @@ bool SendMessages(CNode* pto, CConnman& connman, const std::atomic<bool>& interr
             }
         }
 
-        TRY_LOCK(cs_main, lockMain); // Acquire cs_main for IsInitialBlockDownload() and CNodeState()
+        TRY_LOCK(cs_main, lockMain); // Acquire cs_main for CNodeState()
         if (!lockMain)
             return true;
 

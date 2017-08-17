@@ -1959,12 +1959,10 @@ bool CConnman::OpenNetworkConnection(const CAddress& addrConnect, bool fCountFai
         return false;
     if (grantOutbound)
         grantOutbound->MoveTo(pnode->grantOutbound);
-    if (fOneShot)
-        pnode->fOneShot = true;
-    if (fFeeler)
-        pnode->fFeeler = true;
-    if (fAddnode)
-        pnode->fAddnode = true;
+
+    pnode->fOneShot = fOneShot;
+    pnode->fFeeler = fFeeler;
+    pnode->fAddnode = fAddnode;
 
     GetNodeSignals().InitializeNode(pnode, *this);
     {

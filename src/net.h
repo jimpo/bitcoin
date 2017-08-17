@@ -330,14 +330,17 @@ private:
     NodeId GetNewNodeId();
 
     size_t SocketSendData(CNode *pnode) const;
-    //!check is the banlist has unwritten changes
+    //!check if the banlist has unwritten changes
     bool BannedSetIsDirty();
     //!set the "dirty" flag for the banlist
     void SetBannedSetDirty(bool dirty=true);
     //!clean unused entries (if bantime has expired)
     void SweepBanned();
-    void DumpAddresses();
+    //! Persist managed data (eg. addresses & banlist) to the database.
     void DumpData();
+    //! Persist address changes to the database.
+    void DumpAddresses();
+    //! Persist banlist changes to the database.
     void DumpBanlist();
 
     // Network stats
@@ -617,13 +620,15 @@ public:
     CCriticalSection cs_SubVer; // used for both cleanSubVer and strSubVer
     bool fWhitelisted; // This peer can bypass DoS banning.
     bool fFeeler; // If true this node is being used as a short lived feeler.
-    // fOneShot indicates a connection to a seed node. We just query the peer for addresses, then
-    // disconnect.
+    /// fOneShot indicates a connection to a seed node. We just query the peer
+    /// for addresses, then disconnect.
     bool fOneShot;
-    // addnode peers are configured, persistent connections. They do not count towards the outbound
-    // connection limit and will not be banned for misbehaving.
+    /// addnode peers are configured, persistent connections. They do not count
+    /// towards the outbound connection limit and will not be banned for
+    /// misbehaving.
     bool fAddnode;
-    bool fClient; // The peer is a light/SPV client, not a full node
+    /// The peer is a light/SPV client, not a full node.
+    bool fClient;
     const bool fInbound;
     std::atomic_bool fSuccessfullyConnected;
     std::atomic_bool fDisconnect;
@@ -647,7 +652,10 @@ protected:
     mapMsgCmdSize mapRecvBytesPerMsgCmd;
 
 public:
+    // TODO: comment me
+    // Stop hash from the last getblocks
     uint256 hashContinue;
+
     std::atomic<int> nStartingHeight;
 
     // flood relay

@@ -27,6 +27,7 @@ void RegisterNodeSignals(CNodeSignals& nodeSignals);
 /** Unregister a network node */
 void UnregisterNodeSignals(CNodeSignals& nodeSignals);
 
+// TODO: Comment me
 class PeerLogicValidation : public CValidationInterface {
 private:
     CConnman* connman;
@@ -52,8 +53,16 @@ bool GetNodeStateStats(NodeId nodeid, CNodeStateStats &stats);
 /** Increase a node's misbehavior score. */
 void Misbehaving(NodeId nodeid, int howmuch);
 
-/** Process protocol messages received from a given node */
+/**
+ * Process one protocol message from the node's queue of received messages.
+ *
+ * @param[in]  pfrom      The node we are receiving messages from
+ * @param[in]  connman    The connection manager
+ * @param[in]  interrupt  Interrupt condition
+ * @return                True if there are more messages to be processed
+ */
 bool ProcessMessages(CNode* pfrom, CConnman& connman, const std::atomic<bool>& interrupt);
+
 /**
  * Send queued protocol messages to be sent to a give node.
  *

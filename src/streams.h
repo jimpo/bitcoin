@@ -138,6 +138,78 @@ private:
     size_t nPos;
 };
 
+/* Minimal stream for reading from an existing vector by reference
+ */
+class CVectorReader
+{
+private:
+    const int nType;
+    const int nVersion;
+    const std::vector<unsigned char>& vchData;
+    size_t nPos;
+
+public:
+
+/*
+ * @param[in]  nTypeIn Serialization Type
+ * @param[in]  nVersionIn Serialization Version (including any flags)
+ * @param[in]  vchDataIn  Referenced byte vector to overwrite/append
+ * @param[in]  nPosIn Starting position. Vector index where writes should start. The vector will initially
+ *                    grow as necessary to  max(nPosIn, vec.size()). So to append, use vec.size().
+*/
+    CVectorReader(int nTypeIn, int nVersionIn, const std::vector<unsigned char>& vchDataIn, size_t nPosIn)
+        : nType(nTypeIn), nVersion(nVersionIn), vchData(vchDataIn), nPos(0)
+    {
+        seek(nPosIn);
+    }
+
+/*
+ * (other params same as above)
+ * @param[in]  args  A list of items to serialize starting at nPosIn.
+*/
+    template <typename... Args>
+    CVectorReader(int nTypeIn, int nVersionIn, const std::vector<unsigned char>& vchDataIn, size_t nPosIn,
+                  Args&&... args)
+        : CVectorReader(nTypeIn, nVersionIn, vchDataIn, nPosIn)
+    {
+        ::UnserializeMany(*this, std::forward<Args>(args)...);
+    }
+
+    template<typename T>
+    CVectorReader& operator>>(T& obj)
+    {
+        // Unserialize from this stream
+        ::Unserialize(*this, obj);
+        return (*this);
+    }
+
+    int GetVersion() const { return nVersion; }
+    int GetType() const { return nType; }
+
+    void read(char* pch, size_t nSize)
+    {
+        if (nSize == 0) {
+            return;
+        }
+
+        // Read from the beginning of the buffer
+        unsigned int nPosNext = nPos + nSize;
+        if (nPosNext > vchData.size()) {
+            throw std::ios_base::failure("CVectorReader::read(): end of data");
+        }
+        memcpy(pch, &vchData[nPos], nSize);
+        nPos = nPosNext;
+    }
+
+    void seek(size_t nSize)
+    {
+        nPos += nSize;
+        if (nPos > vchData.size()) {
+            throw std::ios_base::failure("CVectorReader::seek(): end of data");
+        }
+    }
+};
+
 /** Double ended buffer combining vector and stream-like interfaces.
  *
  * >> and << read and write unformatted data using the above serialization templates.
@@ -435,12 +507,88 @@ public:
     }
 };
 
+template <typename IStream>
+class BitStreamReader
+{
+private:
+    IStream& m_istream;
+    uint8_t m_buffer;
+    int m_offset;
 
+public:
+    BitStreamReader(IStream& istream)
+        : m_istream(istream), m_buffer(0), m_offset(8) {}
 
+    /** Read the specified number of bits from the stream. The data is returned
+     * in the nbits least signficant bits of a 64-bit uint.
+     */
+    uint64_t Read(int nbits) {
+        if (nbits < 0 || nbits > 64) {
+            throw std::out_of_range("nbits must be between 0 and 64");
+        }
 
+        uint64_t data = 0;
+        while (nbits > 0) {
+            if (m_offset == 8) {
+                m_istream >> m_buffer;
+                m_offset = 0;
+            }
 
+            int bits = std::min(8 - m_offset, nbits);
+            data <<= bits;
+            data |= static_cast<uint8_t>(m_buffer << m_offset) >> (8 - bits);
+            m_offset += bits;
+            nbits -= bits;
+        }
+        return data;
+    }
+};
 
+template <typename OStream>
+class BitStreamWriter
+{
+private:
+    OStream& m_ostream;
+    uint8_t m_buffer;
+    int m_offset;
 
+public:
+    BitStreamWriter(OStream& ostream)
+        : m_ostream(ostream), m_buffer(0), m_offset(0) {}
+
+    /** Write the nbits least significant bits of a 64-bit int to the output
+     * stream. Data is buffered until it completes an octet.
+     */
+    void Write(uint64_t data, int nbits) {
+        if (nbits < 0 || nbits > 64) {
+            throw std::out_of_range("nbits must be between 0 and 64");
+        }
+
+        while (nbits > 0) {
+            int bits = std::min(8 - m_offset, nbits);
+            m_buffer |= (data << (64 - nbits)) >> (64 - 8 + m_offset);
+            m_offset += bits;
+            nbits -= bits;
+
+            if (m_offset == 8) {
+                Flush();
+            }
+        }
+    }
+
+    /** Flush any unwritten bits to the output stream, padding with 0's to the
+     * next byte boundary.
+     */
+    void Flush() {
+        if (m_offset == 0) {
+            return;
+        }
+
+        m_ostream << m_buffer;
+        m_buffer = 0;
+        m_offset = 0;
+    }
+};
 
 
 

@@ -100,6 +100,7 @@ BITCOIN_CORE_H = \
   core_memusage.h \
   cuckoocache.h \
   fs.h \
+  gcsfilter.h \
   httprpc.h \
   httpserver.h \
   indirectmap.h \
@@ -325,6 +326,7 @@ libbitcoin_common_a_SOURCES = \
   compressor.cpp \
   core_read.cpp \
   core_write.cpp \
+  gcsfilter.cpp \
   key.cpp \
   keystore.cpp \
   netaddress.cpp \

@@ -9,6 +9,7 @@
 #include <consensus/validation.h>
 #include <core_io.h>
 #include <init.h>
+#include <index/txindex.h>
 #include <keystore.h>
 #include <validation.h>
 #include <validationinterface.h>
@@ -156,12 +157,26 @@ UniValue getrawtransaction(const JSONRPCRequest& request)
         }
     }
 
+    bool f_txindex_ready = false;
+    if (g_txindex) {
+        f_txindex_ready = g_txindex->BlockUntilSyncedToCurrentChain();
+    }
+
     CTransactionRef tx;
     uint256 hashBlock;
-    if (!GetTransaction(hash, tx, Params().GetConsensus(), hashBlock, true))
-        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, std::string(fTxIndex ? "No such mempool or blockchain transaction"
-            : "No such mempool transaction. Use -txindex to enable blockchain transaction queries") +
-            ". Use gettransaction for wallet transactions.");
+    if (!GetTransaction(hash, tx, Params().GetConsensus(), hashBlock, true)) {
+        std::string message;
+        if (!g_txindex) {
+            message = "No such mempool transaction. Use -txindex to enable blockchain transaction queries.";
+        } else if (!f_txindex_ready) {
+            message = "No such mempool transaction. Blockchain transactions are still in the process of being indexed.";
+        } else {
+            message = "No such mempool or blockchain transaction.";
+        }
+        message += " Use gettransaction for wallet transactions.";
+
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, message);
+    }
 
     if (!fVerbose)
         return EncodeHexTx(*tx, RPCSerializationFlags());

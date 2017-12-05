@@ -139,6 +139,59 @@ void TxIndex::ThreadSync()
     }
 
     LogPrintf("txindex is enabled at height %d\n", pindex->nHeight);
+
+    while (!m_interrupt) {
+        m_queue_signal.sleep_for(std::chrono::seconds(3600));
+
+        // Process queue until empty or interrupted.
+        while (true) {
+            if (m_interrupt) {
+                return;
+            }
+
+            TxIndexUpdate update;
+            {
+                LOCK(m_cs_queue);
+                if (m_queue.empty()) {
+                    m_queue_signal.reset();
+                    break;
+                }
+
+                auto entry = std::move(m_queue.front());
+                m_queue.pop_front();
+
+                // Queue entry may just be a marker inserted by BlockUntilSyncedToCurrentChain.
+                if (auto promise = boost::get<std::promise<void> >(&entry)) {
+                    promise->set_value();
+                    continue;
+                }
+
+                update = std::move(boost::get<TxIndexUpdate>(entry));
+            }
+
+            auto pindex = update.m_pindex;
+
+            // Ensure block connects to an ancestor of the current best block.
+            {
+                LOCK(cs_main);
+                auto best_block_index = m_best_block_index.load();
+                if (best_block_index->GetAncestor(pindex->nHeight - 1) != pindex->pprev) {
+                    FatalError("%s: Block %s does not connect to an ancestor of known best chain (tip=%s)",
+                               __func__, pindex->GetBlockHash().ToString(),
+                               best_block_index->GetBlockHash().ToString());
+                    return;
+                }
+            }
+
+            if (WriteBlock(*update.m_block, pindex)) {
+                m_best_block_index = pindex;
+            } else {
+                FatalError("%s: Failed to write block %s to txindex",
+                           __func__, pindex->GetBlockHash().ToString());
+                return;
+            }
+        }
+    }
 }
 
 bool TxIndex::WriteBlock(const CBlock& block, const CBlockIndex* pindex)
@@ -160,27 +213,12 @@ void TxIndex::BlockConnected(const std::shared_ptr<const CBlock>& block, const C
         return;
     }
 
-    {
-        LOCK(cs_main);
-        auto best_block_index = m_best_block_index.load();
-        if (best_block_index->GetAncestor(pindex->nHeight - 1) != pindex->pprev) {
-            FatalError("%s: Block %s does not connect to an ancestor of known best chain (tip=%s)",
-                       __func__, pindex->GetBlockHash().ToString(),
-                       best_block_index->GetBlockHash().ToString());
-            return;
-        }
-    }
-
-    if (WriteBlock(*block, pindex)) {
-        m_best_block_index = pindex;
-    } else {
-        FatalError("%s: Failed to write block %s to txindex",
-                   __func__, pindex->GetBlockHash().ToString());
-        return;
-    }
+    LOCK(m_cs_queue);
+    m_queue.push_back(TxIndexUpdate(block, pindex));
+    m_queue_signal();
 }
 
-bool TxIndex::BlockUntilSyncedToCurrentChain() const
+bool TxIndex::BlockUntilSyncedToCurrentChain()
 {
     AssertLockNotHeld(cs_main);
 
@@ -204,11 +242,23 @@ bool TxIndex::BlockUntilSyncedToCurrentChain() const
     // for the queue to drain enough to execute it (indicating we are caught up
     // at least with the time we entered this function).
 
-    std::promise<void> promise;
-    CallFunctionInValidationInterfaceQueue([&promise] {
-        promise.set_value();
+    std::promise<void> promise1;
+    CallFunctionInValidationInterfaceQueue([&promise1] {
+        promise1.set_value();
     });
-    promise.get_future().wait();
+    promise1.get_future().wait();
+
+    std::future<void> future2;
+    {
+        LOCK(m_cs_queue);
+        m_queue.push_back(std::promise<void>());
+        m_queue_signal();
+
+        auto& promise = boost::get<std::promise<void>>(m_queue.back());
+        future2 = std::move(promise.get_future());
+    }
+    future2.wait();
+
     return true;
 }
 
@@ -220,6 +270,7 @@ bool TxIndex::FindTx(const uint256& txid, CDiskTxPos& pos) const
 void TxIndex::Interrupt()
 {
     m_interrupt();
+    m_queue_signal();
 }
 
 void TxIndex::Start()

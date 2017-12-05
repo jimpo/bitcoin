@@ -10,7 +10,23 @@
 #include <uint256.h>
 #include <validationinterface.h>
 
+#include <boost/variant.hpp>
+#include <future>
+
 class CBlockIndex;
+
+struct TxIndexUpdate {
+    std::shared_ptr<const CBlock> m_block;
+    const CBlockIndex* m_pindex;
+
+    TxIndexUpdate() = default;
+    TxIndexUpdate(const std::shared_ptr<const CBlock>& block, const CBlockIndex* pindex) :
+        m_block(block), m_pindex(pindex) {}
+
+    TxIndexUpdate(TxIndexUpdate&& other) = default;
+
+    TxIndexUpdate& operator=(TxIndexUpdate&& other) = default;
+};
 
 /**
  * TxIndex is used to look up transactions included in the blockchain by hash.
@@ -26,6 +42,10 @@ private:
 
     std::thread m_thread_sync;
     CThreadInterrupt m_interrupt;
+
+    std::deque<boost::variant<TxIndexUpdate, std::promise<void> > > m_queue;
+    std::mutex m_queue_mtx;
+    std::condition_variable m_queue_signal;
 
     /// Initialize internal state from the database and block index.
     bool Init();
@@ -50,7 +70,7 @@ public:
 
     /// Blocks the current thread until the tx index is caught up to the current
     /// state of the block chain.
-    bool BlockUntilSyncedToCurrentChain() const;
+    bool BlockUntilSyncedToCurrentChain();
 
     /// Look up the on-disk location of a transaction by hash.
     bool FindTx(const uint256& txid, CDiskTxPos& pos) const;

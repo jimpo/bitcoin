@@ -139,6 +139,53 @@ void TxIndex::ThreadSync()
     }
 
     LogPrintf("txindex is enabled at height %d\n", pindex->nHeight);
+
+    // Process queue of block updates until interrupted.
+    while (!m_interrupt) {
+        TxIndexUpdate update;
+        {
+            std::unique_lock<std::mutex> lock(m_queue_mtx);
+            while (m_queue.empty()) {
+                m_queue_signal.wait(lock);
+                if (m_interrupt) {
+                    return;
+                }
+            }
+
+            auto entry = std::move(m_queue.front());
+            m_queue.pop_front();
+
+            // Queue entry may just be a marker inserted by BlockUntilSyncedToCurrentChain.
+            if (auto promise = boost::get<std::promise<void> >(&entry)) {
+                promise->set_value();
+                continue;
+            }
+
+            update = std::move(boost::get<TxIndexUpdate>(entry));
+        }
+
+        auto pindex = update.m_pindex;
+
+        // Ensure block connects to an ancestor of the current best block.
+        {
+            LOCK(cs_main);
+            auto best_block_index = m_best_block_index.load();
+            if (best_block_index->GetAncestor(pindex->nHeight - 1) != pindex->pprev) {
+                FatalError("%s: Block %s does not connect to an ancestor of known best chain (tip=%s)",
+                           __func__, pindex->GetBlockHash().ToString(),
+                           best_block_index->GetBlockHash().ToString());
+                return;
+            }
+        }
+
+        if (WriteBlock(*update.m_block, pindex)) {
+            m_best_block_index = pindex;
+        } else {
+            FatalError("%s: Failed to write block %s to txindex",
+                       __func__, pindex->GetBlockHash().ToString());
+            return;
+        }
+    }
 }
 
 bool TxIndex::WriteBlock(const CBlock& block, const CBlockIndex* pindex)
@@ -161,26 +208,13 @@ void TxIndex::BlockConnected(const std::shared_ptr<const CBlock>& block, const C
     }
 
     {
-        LOCK(cs_main);
-        auto best_block_index = m_best_block_index.load();
-        if (best_block_index->GetAncestor(pindex->nHeight - 1) != pindex->pprev) {
-            FatalError("%s: Block %s does not connect to an ancestor of known best chain (tip=%s)",
-                       __func__, pindex->GetBlockHash().ToString(),
-                       best_block_index->GetBlockHash().ToString());
-            return;
-        }
+        std::unique_lock<std::mutex> lock(m_queue_mtx);
+        m_queue.push_back(TxIndexUpdate(block, pindex));
     }
-
-    if (WriteBlock(*block, pindex)) {
-        m_best_block_index = pindex;
-    } else {
-        FatalError("%s: Failed to write block %s to txindex",
-                   __func__, pindex->GetBlockHash().ToString());
-        return;
-    }
+    m_queue_signal.notify_all();
 }
 
-bool TxIndex::BlockUntilSyncedToCurrentChain() const
+bool TxIndex::BlockUntilSyncedToCurrentChain()
 {
     AssertLockNotHeld(cs_main);
 
@@ -204,11 +238,23 @@ bool TxIndex::BlockUntilSyncedToCurrentChain() const
     // for the queue to drain enough to execute it (indicating we are caught up
     // at least with the time we entered this function).
 
-    std::promise<void> promise;
-    CallFunctionInValidationInterfaceQueue([&promise] {
-        promise.set_value();
+    std::promise<void> promise1;
+    CallFunctionInValidationInterfaceQueue([&promise1] {
+        promise1.set_value();
     });
-    promise.get_future().wait();
+    promise1.get_future().wait();
+
+    std::future<void> future2;
+    {
+        std::unique_lock<std::mutex> lock(m_queue_mtx);
+        m_queue.push_back(std::promise<void>());
+
+        auto& promise = boost::get<std::promise<void>>(m_queue.back());
+        future2 = std::move(promise.get_future());
+    }
+    m_queue_signal.notify_all();
+    future2.wait();
+
     return true;
 }
 
@@ -220,6 +266,7 @@ bool TxIndex::FindTx(const uint256& txid, CDiskTxPos& pos) const
 void TxIndex::Interrupt()
 {
     m_interrupt();
+    m_queue_signal.notify_all();
 }
 
 void TxIndex::Start()

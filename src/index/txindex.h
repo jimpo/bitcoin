@@ -58,11 +58,12 @@ private:
     /// Write update index entries for a newly connected block.
     bool WriteBlock(const CBlock& block, const CBlockIndex* pindex);
 
-protected:
+public:
+    // REVIEW: This could be protected, but I need to call it explicitly in unit tests since the
+    // scheduler thread is not running. Is there a way to friend this to the unit test case?
     void BlockConnected(const std::shared_ptr<const CBlock>& block, const CBlockIndex* pindex,
                         const std::vector<CTransactionRef>& txn_conflicted) override;
 
-public:
     explicit TxIndex(const std::shared_ptr<CBlockTreeDB>& db);
 
     /// Destructor interrupts sync thread if running and blocks until it exits.
@@ -70,7 +71,7 @@ public:
 
     /// Blocks the current thread until the tx index is caught up to the current
     /// state of the block chain.
-    bool BlockUntilSyncedToCurrentChain();
+    bool BlockUntilSyncedToCurrentChain(bool await_scheduler = true);
 
     /// Look up the on-disk location of a transaction by hash.
     bool FindTx(const uint256& txid, CDiskTxPos& pos) const;

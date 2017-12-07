@@ -214,7 +214,7 @@ void TxIndex::BlockConnected(const std::shared_ptr<const CBlock>& block, const C
     m_queue_signal.notify_all();
 }
 
-bool TxIndex::BlockUntilSyncedToCurrentChain()
+bool TxIndex::BlockUntilSyncedToCurrentChain(bool await_scheduler)
 {
     AssertLockNotHeld(cs_main);
 
@@ -238,11 +238,13 @@ bool TxIndex::BlockUntilSyncedToCurrentChain()
     // for the queue to drain enough to execute it (indicating we are caught up
     // at least with the time we entered this function).
 
-    std::promise<void> promise1;
-    CallFunctionInValidationInterfaceQueue([&promise1] {
-        promise1.set_value();
-    });
-    promise1.get_future().wait();
+    if (await_scheduler) {
+        std::promise<void> promise1;
+        CallFunctionInValidationInterfaceQueue([&promise1] {
+                promise1.set_value();
+            });
+        promise1.get_future().wait();
+    }
 
     std::future<void> future2;
     {

@@ -189,7 +189,7 @@ void TxIndex::BlockConnected(const std::shared_ptr<const CBlock>& block, const C
     m_update_queue.Push(std::move(TxIndexUpdate(block, pindex)));
 }
 
-bool TxIndex::BlockUntilSyncedToCurrentChain()
+bool TxIndex::BlockUntilSyncedToCurrentChain(bool await_scheduler)
 {
     AssertLockNotHeld(cs_main);
 
@@ -211,11 +211,13 @@ bool TxIndex::BlockUntilSyncedToCurrentChain()
     // ...otherwise put a callback in the validation interface queue and wait
     // for the queue to drain enough to execute it (indicating we are caught up
     // at least with the time we entered this function).
-    std::promise<void> promise;
-    CallFunctionInValidationInterfaceQueue([&promise] {
-        promise.set_value();
-    });
-    promise.get_future().wait();
+    if (await_scheduler) {
+        std::promise<void> promise;
+        CallFunctionInValidationInterfaceQueue([&promise] {
+                promise.set_value();
+            });
+        promise.get_future().wait();
+    }
 
     // Finally, wait for the internal update queue to process all current
     // entries.

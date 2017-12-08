@@ -27,6 +27,12 @@ TxIndex::TxIndex(const std::shared_ptr<CBlockTreeDB>& db) :
     m_db(db), m_synced(false), m_best_block_index(nullptr)
 {}
 
+TxIndex::~TxIndex()
+{
+    Interrupt();
+    Stop();
+}
+
 bool TxIndex::Init()
 {
     LOCK(cs_main);
@@ -99,6 +105,10 @@ void TxIndex::ThreadSync()
                   pindex ? pindex->nHeight + 1 : 0);
 
         while (true) {
+            if (m_interrupt) {
+                return;
+            }
+
             {
                 LOCK(cs_main);
                 auto pindex_next = NextSyncBlock(pindex);
@@ -169,6 +179,11 @@ void TxIndex::BlockConnected(const std::shared_ptr<const CBlock>& block, const C
 bool TxIndex::FindTx(const uint256& txid, CDiskTxPos& pos) const
 {
     return m_db->ReadTxIndex(txid, pos);
+}
+
+void TxIndex::Interrupt()
+{
+    m_interrupt();
 }
 
 void TxIndex::Start()

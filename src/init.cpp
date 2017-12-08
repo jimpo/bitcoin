@@ -19,6 +19,7 @@
 #include <fs.h>
 #include <httpserver.h>
 #include <httprpc.h>
+#include <index/txindex.h>
 #include <key.h>
 #include <validation.h>
 #include <miner.h>
@@ -164,6 +165,9 @@ void Interrupt(boost::thread_group& threadGroup)
     InterruptTorControl();
     if (g_connman)
         g_connman->Interrupt();
+    if (g_txindex) {
+        g_txindex->Interrupt();
+    }
     threadGroup.interrupt_all();
 }
 
@@ -197,6 +201,9 @@ void Shutdown()
     if (g_connman) g_connman->Stop();
     peerLogic.reset();
     g_connman.reset();
+    if (g_txindex) {
+        g_txindex.reset();
+    }
 
     StopTorControl();
     if (fDumpMempoolLater && gArgs.GetArg("-persistmempool", DEFAULT_PERSIST_MEMPOOL)) {
@@ -1426,9 +1433,8 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
 
                 if (fRequestShutdown) break;
 
-                // LoadBlockIndex will load fTxIndex from the db, or set it if
-                // we're reindexing. It will also load fHavePruned if we've
-                // ever removed a block file from disk.
+                // LoadBlockIndex will load fHavePruned if we've ever removed a
+                // block file from disk.
                 // Note that it also sets fReindex based on the disk flag!
                 // From here on out fReindex and fReset mean something different!
                 if (!LoadBlockIndex(chainparams)) {
@@ -1557,6 +1563,11 @@ bool AppInitMain(boost::thread_group& threadGroup, CScheduler& scheduler)
             } else {
                 return InitError(strLoadError);
             }
+        }
+
+        if (gArgs.GetBoolArg("-txindex", DEFAULT_TXINDEX)) {
+            g_txindex.reset(new TxIndex(pblocktree));
+            g_txindex->Start();
         }
     }
 

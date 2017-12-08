@@ -48,6 +48,10 @@ public:
     /// Destructor interrupts sync thread if running and blocks until it exits.
     ~TxIndex();
 
+    /// Blocks the current thread until the transaction index is caught up to
+    /// the current state of the block chain.
+    bool BlockUntilSyncedToCurrentChain();
+
     /// Look up the on-disk location of a transaction by hash.
     bool FindTx(const uint256& txid, CDiskTxPos& pos) const;
 

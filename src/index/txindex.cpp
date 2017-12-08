@@ -2,6 +2,8 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <future>
+
 #include <chainparams.h>
 #include <index/txindex.h>
 #include <init.h>
@@ -167,6 +169,37 @@ void TxIndex::BlockConnected(const std::shared_ptr<const CBlock>& block, const C
                    __func__, pindex->GetBlockHash().ToString());
         return;
     }
+}
+
+bool TxIndex::BlockUntilSyncedToCurrentChain()
+{
+    AssertLockNotHeld(cs_main);
+
+    if (!m_synced) {
+        return false;
+    }
+
+    {
+        // Skip the queue-draining stuff if we know we're caught up with
+        // chainActive.Tip()...
+        LOCK(cs_main);
+        auto chain_tip = chainActive.Tip();
+        auto best_block_index = m_best_block_index.load();
+        if (best_block_index->GetAncestor(chain_tip->nHeight) == chain_tip) {
+            return true;
+        }
+    }
+
+    // ...otherwise put a callback in the validation interface queue and wait
+    // for the queue to drain enough to execute it (indicating we are caught up
+    // at least with the time we entered this function).
+    std::promise<void> promise;
+    CallFunctionInValidationInterfaceQueue([&promise] {
+        promise.set_value();
+    });
+    promise.get_future().wait();
+
+    return true;
 }
 
 bool TxIndex::FindTx(const uint256& txid, CDiskTxPos& pos) const

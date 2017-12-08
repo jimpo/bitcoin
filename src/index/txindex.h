@@ -23,8 +23,14 @@ private:
     std::atomic<bool> m_synced;
     std::atomic<const CBlockIndex*> m_best_block_index;
 
+    std::thread m_thread_sync;
+
     /// Initialize internal state from the database and block index.
     bool Init();
+
+    /// Sync the tx index with the block index starting from the current best
+    /// block. Intended to be run in its own thread, m_thread_sync.
+    void ThreadSync();
 
     /// Write update index entries for a newly connected block.
     bool WriteBlock(const CBlock& block, const CBlockIndex* pindex);

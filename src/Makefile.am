@@ -124,6 +124,7 @@ BITCOIN_CORE_H = \
   policy/rbf.h \
   pow.h \
   protocol.h \
+  queue.h \
   random.h \
   reverse_iterator.h \
   reverselock.h \

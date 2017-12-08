@@ -134,6 +134,36 @@ void TxIndex::ThreadSync()
     }
 
     LogPrintf("txindex is enabled at height %d\n", pindex->nHeight);
+
+    // Process queue of block updates until interrupted.
+    while (!m_interrupt) {
+        TxIndexUpdate update;
+        if (!m_update_queue.Pop(update)) {
+            return;
+        }
+
+        auto pindex = update.m_pindex;
+
+        // Ensure block connects to an ancestor of the current best block.
+        {
+            LOCK(cs_main);
+            auto best_block_index = m_best_block_index.load();
+            if (best_block_index->GetAncestor(pindex->nHeight - 1) != pindex->pprev) {
+                FatalError("%s: Block %s does not connect to an ancestor of known best chain (tip=%s)",
+                           __func__, pindex->GetBlockHash().ToString(),
+                           best_block_index->GetBlockHash().ToString());
+                return;
+            }
+        }
+
+        if (WriteBlock(*update.m_block, pindex)) {
+            m_best_block_index = pindex;
+        } else {
+            FatalError("%s: Failed to write block %s to txindex",
+                       __func__, pindex->GetBlockHash().ToString());
+            return;
+        }
+    }
 }
 
 bool TxIndex::WriteBlock(const CBlock& block, const CBlockIndex* pindex)
@@ -154,26 +184,7 @@ void TxIndex::BlockConnected(const std::shared_ptr<const CBlock>& block, const C
     if (!m_synced) {
         return;
     }
-
-    // Ensure block connects to an ancestor of the current best block.
-    {
-        LOCK(cs_main);
-        auto best_block_index = m_best_block_index.load();
-        if (best_block_index->GetAncestor(pindex->nHeight - 1) != pindex->pprev) {
-            FatalError("%s: Block %s does not connect to an ancestor of known best chain (tip=%s)",
-                       __func__, pindex->GetBlockHash().ToString(),
-                       best_block_index->GetBlockHash().ToString());
-            return;
-        }
-    }
-
-    if (WriteBlock(*block, pindex)) {
-        m_best_block_index = pindex;
-    } else {
-        FatalError("%s: Failed to write block %s to txindex",
-                   __func__, pindex->GetBlockHash().ToString());
-        return;
-    }
+    m_update_queue.Push(std::move(TxIndexUpdate(block, pindex)));
 }
 
 bool TxIndex::FindTx(const uint256& txid, CDiskTxPos& pos) const
@@ -184,6 +195,7 @@ bool TxIndex::FindTx(const uint256& txid, CDiskTxPos& pos) const
 void TxIndex::Interrupt()
 {
     m_interrupt();
+    m_update_queue.Interrupt();
 }
 
 void TxIndex::Start()

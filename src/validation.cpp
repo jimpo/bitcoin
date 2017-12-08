@@ -1892,7 +1892,7 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
     }
 
     if (fTxIndex)
-        if (!pblocktree->WriteTxIndex(vPos))
+        if (!pblocktree->WriteTxIndex(vPos, pindex->GetBlockHash()))
             return AbortNode(state, "Failed to write transaction index");
 
     assert(pindex->phashBlock);

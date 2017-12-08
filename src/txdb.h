@@ -120,7 +120,9 @@ public:
     bool WriteReindexing(bool fReindexing);
     bool ReadReindexing(bool &fReindexing);
     bool ReadTxIndex(const uint256 &txid, CDiskTxPos &pos);
-    bool WriteTxIndex(const std::vector<std::pair<uint256, CDiskTxPos> > &vect);
+    bool WriteTxIndex(const std::vector<std::pair<uint256, CDiskTxPos> > &vect,
+                      const uint256& block_hash);
+    bool ReadTxIndexBestBlockHash(uint256& hash) const;
     bool WriteFlag(const std::string &name, bool fValue);
     bool ReadFlag(const std::string &name, bool &fValue);
     bool LoadBlockIndexGuts(const Consensus::Params& consensusParams, std::function<CBlockIndex*(const uint256&)> insertBlockIndex);

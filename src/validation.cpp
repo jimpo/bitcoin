@@ -17,6 +17,7 @@
 #include <cuckoocache.h>
 #include <fs.h>
 #include <hash.h>
+#include <index/txindex.h>
 #include <init.h>
 #include <policy/fees.h>
 #include <policy/policy.h>
@@ -70,7 +71,6 @@ CConditionVariable cvBlockChange;
 int nScriptCheckThreads = 0;
 std::atomic_bool fImporting(false);
 std::atomic_bool fReindex(false);
-bool fTxIndex = false;
 bool fHavePruned = false;
 bool fPruneMode = false;
 bool fIsBareMultisigStd = DEFAULT_PERMIT_BAREMULTISIG;
@@ -943,9 +943,9 @@ bool GetTransaction(const uint256& hash, CTransactionRef& txOut, const Consensus
             return true;
         }
 
-        if (fTxIndex) {
+        if (g_txindex) {
             CDiskTxPos postx;
-            if (pblocktree->ReadTxIndex(hash, postx)) {
+            if (g_txindex->FindTx(hash, postx)) {
                 CAutoFile file(OpenBlockFile(postx, true), SER_DISK, CLIENT_VERSION);
                 if (file.IsNull())
                     return error("%s: OpenBlockFile failed", __func__);
@@ -1787,9 +1787,6 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
     CAmount nFees = 0;
     int nInputs = 0;
     int64_t nSigOpsCost = 0;
-    CDiskTxPos pos(pindex->GetBlockPos(), GetSizeOfCompactSize(block.vtx.size()));
-    std::vector<std::pair<uint256, CDiskTxPos> > vPos;
-    vPos.reserve(block.vtx.size());
     blockundo.vtxundo.reserve(block.vtx.size() - 1);
     std::vector<PrecomputedTransactionData> txdata;
     txdata.reserve(block.vtx.size()); // Required so that pointers to individual PrecomputedTransactionData don't get invalidated
@@ -1850,9 +1847,6 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
             blockundo.vtxundo.push_back(CTxUndo());
         }
         UpdateCoins(tx, view, i == 0 ? undoDummy : blockundo.vtxundo.back(), pindex->nHeight);
-
-        vPos.push_back(std::make_pair(tx.GetHash(), pos));
-        pos.nTxOffset += ::GetSerializeSize(tx, SER_DISK, CLIENT_VERSION);
     }
     int64_t nTime3 = GetTimeMicros(); nTimeConnect += nTime3 - nTime2;
     LogPrint(BCLog::BENCH, "      - Connect %u transactions: %.2fms (%.3fms/tx, %.3fms/txin) [%.2fs (%.2fms/blk)]\n", (unsigned)block.vtx.size(), MILLI * (nTime3 - nTime2), MILLI * (nTime3 - nTime2) / block.vtx.size(), nInputs <= 1 ? 0 : MILLI * (nTime3 - nTime2) / (nInputs-1), nTimeConnect * MICRO, nTimeConnect * MILLI / nBlocksTotal);
@@ -1890,10 +1884,6 @@ static bool ConnectBlock(const CBlock& block, CValidationState& state, CBlockInd
         pindex->RaiseValidity(BLOCK_VALID_SCRIPTS);
         setDirtyBlockIndex.insert(pindex);
     }
-
-    if (fTxIndex)
-        if (!pblocktree->WriteTxIndex(vPos, pindex->GetBlockHash()))
-            return AbortNode(state, "Failed to write transaction index");
 
     assert(pindex->phashBlock);
     // add this block to the view's block chain
@@ -3635,10 +3625,6 @@ bool static LoadBlockIndexDB(const CChainParams& chainparams)
     pblocktree->ReadReindexing(fReindexing);
     if(fReindexing) fReindex = true;
 
-    // Check whether we have a transaction index
-    pblocktree->ReadFlag("txindex", fTxIndex);
-    LogPrintf("%s: transaction index %s\n", __func__, fTxIndex ? "enabled" : "disabled");
-
     return true;
 }
 
@@ -4002,9 +3988,6 @@ bool LoadBlockIndex(const CChainParams& chainparams)
         // needs_init.
 
         LogPrintf("Initializing databases...\n");
-        // Use the provided setting for -txindex in the new database
-        fTxIndex = gArgs.GetBoolArg("-txindex", DEFAULT_TXINDEX);
-        pblocktree->WriteFlag("txindex", fTxIndex);
     }
     return true;
 }

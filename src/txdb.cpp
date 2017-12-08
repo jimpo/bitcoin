@@ -29,6 +29,7 @@ static const char DB_HEAD_BLOCKS = 'H';
 static const char DB_FLAG = 'F';
 static const char DB_REINDEX_FLAG = 'R';
 static const char DB_LAST_BLOCK = 'l';
+static const char DB_TXINDEX_BEST_BLOCK = 'T';
 
 namespace {
 
@@ -240,11 +241,29 @@ bool CBlockTreeDB::ReadTxIndex(const uint256 &txid, CDiskTxPos &pos) {
     return Read(std::make_pair(DB_TXINDEX, txid), pos);
 }
 
-bool CBlockTreeDB::WriteTxIndex(const std::vector<std::pair<uint256, CDiskTxPos> >&vect) {
+bool CBlockTreeDB::WriteTxIndex(const std::vector<std::pair<uint256, CDiskTxPos> >&vect,
+                                const uint256& block_hash) {
     CDBBatch batch(*this);
-    for (std::vector<std::pair<uint256,CDiskTxPos> >::const_iterator it=vect.begin(); it!=vect.end(); it++)
+    for (std::vector<std::pair<uint256,CDiskTxPos> >::const_iterator it=vect.begin(); it!=vect.end(); it++) {
         batch.Write(std::make_pair(DB_TXINDEX, it->first), it->second);
+    }
+    batch.Write(DB_TXINDEX_BEST_BLOCK, block_hash);
     return WriteBatch(batch);
+}
+
+bool CBlockTreeDB::ReadTxIndexBestBlockHash(uint256& hash) const {
+    if (Read(DB_TXINDEX_BEST_BLOCK, hash)) {
+        return true;
+    }
+
+    // Read might have failed either because key does not exist or due to an error.
+    // If the former, return value should still be true.
+    if (!Exists(DB_TXINDEX_BEST_BLOCK)) {
+        hash.SetNull();
+        return true;
+    }
+
+    return false;
 }
 
 bool CBlockTreeDB::WriteFlag(const std::string &name, bool fValue) {

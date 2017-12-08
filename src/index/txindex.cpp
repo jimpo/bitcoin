@@ -11,6 +11,8 @@
 #include <validation.h>
 #include <warnings.h>
 
+std::unique_ptr<TxIndex> g_txindex;
+
 template<typename... Args>
 static void FatalError(const char* fmt, const Args&... args)
 {

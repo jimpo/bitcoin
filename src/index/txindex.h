@@ -5,13 +5,11 @@
 #ifndef BITCOIN_INDEX_TXINDEX_H
 #define BITCOIN_INDEX_TXINDEX_H
 
+#include <queue.h>
 #include <threadinterrupt.h>
 #include <txdb.h>
 #include <uint256.h>
 #include <validationinterface.h>
-
-#include <boost/variant.hpp>
-#include <future>
 
 class CBlockIndex;
 
@@ -19,10 +17,11 @@ struct TxIndexUpdate {
     std::shared_ptr<const CBlock> m_block;
     const CBlockIndex* m_pindex;
 
-    TxIndexUpdate() = default;
     TxIndexUpdate(const std::shared_ptr<const CBlock>& block, const CBlockIndex* pindex) :
         m_block(block), m_pindex(pindex) {}
 
+    TxIndexUpdate() = default;
+    TxIndexUpdate(const TxIndexUpdate& other) = default;
     TxIndexUpdate(TxIndexUpdate&& other) = default;
 
     TxIndexUpdate& operator=(TxIndexUpdate&& other) = default;
@@ -42,10 +41,7 @@ private:
 
     std::thread m_thread_sync;
     CThreadInterrupt m_interrupt;
-
-    std::deque<boost::variant<TxIndexUpdate, std::promise<void> > > m_queue;
-    std::mutex m_queue_mtx;
-    std::condition_variable m_queue_signal;
+    Queue<TxIndexUpdate> m_update_queue;
 
     /// Initialize internal state from the database and block index.
     bool Init();

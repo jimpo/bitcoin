@@ -2,8 +2,6 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <future>
-
 #include <chainparams.h>
 #include <index/txindex.h>
 #include <init.h>
@@ -143,25 +141,8 @@ void TxIndex::ThreadSync()
     // Process queue of block updates until interrupted.
     while (!m_interrupt) {
         TxIndexUpdate update;
-        {
-            std::unique_lock<std::mutex> lock(m_queue_mtx);
-            while (m_queue.empty()) {
-                m_queue_signal.wait(lock);
-                if (m_interrupt) {
-                    return;
-                }
-            }
-
-            auto entry = std::move(m_queue.front());
-            m_queue.pop_front();
-
-            // Queue entry may just be a marker inserted by BlockUntilSyncedToCurrentChain.
-            if (auto promise = boost::get<std::promise<void> >(&entry)) {
-                promise->set_value();
-                continue;
-            }
-
-            update = std::move(boost::get<TxIndexUpdate>(entry));
+        if (!m_update_queue.Pop(update)) {
+            return;
         }
 
         auto pindex = update.m_pindex;
@@ -206,12 +187,7 @@ void TxIndex::BlockConnected(const std::shared_ptr<const CBlock>& block, const C
     if (!m_synced) {
         return;
     }
-
-    {
-        std::unique_lock<std::mutex> lock(m_queue_mtx);
-        m_queue.push_back(TxIndexUpdate(block, pindex));
-    }
-    m_queue_signal.notify_all();
+    m_update_queue.Push(std::move(TxIndexUpdate(block, pindex)));
 }
 
 bool TxIndex::BlockUntilSyncedToCurrentChain(bool await_scheduler)
@@ -239,23 +215,14 @@ bool TxIndex::BlockUntilSyncedToCurrentChain(bool await_scheduler)
     // at least with the time we entered this function).
 
     if (await_scheduler) {
-        std::promise<void> promise1;
-        CallFunctionInValidationInterfaceQueue([&promise1] {
-                promise1.set_value();
+        std::promise<void> promise;
+        CallFunctionInValidationInterfaceQueue([&promise] {
+                promise.set_value();
             });
-        promise1.get_future().wait();
+        promise.get_future().wait();
     }
 
-    std::future<void> future2;
-    {
-        std::unique_lock<std::mutex> lock(m_queue_mtx);
-        m_queue.push_back(std::promise<void>());
-
-        auto& promise = boost::get<std::promise<void>>(m_queue.back());
-        future2 = std::move(promise.get_future());
-    }
-    m_queue_signal.notify_all();
-    future2.wait();
+    m_update_queue.WaitUntilProcessed().wait();
 
     return true;
 }
@@ -268,7 +235,7 @@ bool TxIndex::FindTx(const uint256& txid, CDiskTxPos& pos) const
 void TxIndex::Interrupt()
 {
     m_interrupt();
-    m_queue_signal.notify_all();
+    m_update_queue.Interrupt();
 }
 
 void TxIndex::Start()

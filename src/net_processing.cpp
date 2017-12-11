@@ -2585,6 +2585,12 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
     {
         std::vector<CBlockHeader> headers;
 
+        bool compact_headers = pfrom->nVersion >= COMPACT_HEADERS_VERSION;
+        uint256 prev_block;
+        if (compact_headers) {
+            vRecv >> prev_block;
+        }
+
         // Bypass the normal CBlock deserialization, as we don't want to risk deserializing 2000 full blocks.
         unsigned int nCount = ReadCompactSize(vRecv);
         if (nCount > MAX_HEADERS_RESULTS) {
@@ -2592,10 +2598,21 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
             Misbehaving(pfrom->GetId(), 20);
             return error("headers message size = %u", nCount);
         }
+        if (nCount == 0) {
+            return true;
+        }
         headers.resize(nCount);
-        for (unsigned int n = 0; n < nCount; n++) {
-            vRecv >> headers[n];
-            ReadCompactSize(vRecv); // ignore tx count; assume it is 0.
+        if (compact_headers) {
+            vRecv.SetVersion(vRecv.GetVersion() | SERIALIZE_HEADER_COMPACT);
+            for (unsigned int n = 0; n < nCount; n++) {
+                vRecv >> headers[n];
+            }
+            headers[0].hashPrevBlock = prev_block;
+        } else {
+            for (unsigned int n = 0; n < nCount; n++) {
+                vRecv >> headers[n];
+                ReadCompactSize(vRecv); // ignore tx count; assume it is 0.
+            }
         }
 
         // Headers received via a HEADERS message should be valid, and reflect

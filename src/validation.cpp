@@ -3101,9 +3101,27 @@ static bool ContextualCheckBlock(const CBlock& block, CValidationState& state, c
     return true;
 }
 
-static bool AcceptBlockHeader(const CBlockHeader& block, CValidationState& state, const CChainParams& chainparams, CBlockIndex** ppindex)
+static bool AcceptBlockHeader(CBlockHeader& block, CValidationState& state, const CChainParams& chainparams, CBlockIndex* pindexPrev, CBlockIndex** ppindex, bool* is_new = nullptr, bool implied_prevhash = false, bool implied_difficulty = false)
 {
     AssertLockHeld(cs_main);
+
+    if (!pindexPrev) {
+        // Get prev block index
+        auto mi = mapBlockIndex.find(block.hashPrevBlock);
+        if (mi == mapBlockIndex.end()) {
+            return state.DoS(10, error("%s: prev block not found", __func__), 0, "prev-blk-not-found");
+        }
+        pindexPrev = mi->second;
+    } else if (implied_prevhash) {
+        block.hashPrevBlock = pindexPrev->GetBlockHash();
+    } else {
+        assert(block.hashPrevBlock == pindexPrev->GetBlockHash());
+    }
+
+    if (implied_difficulty) {
+        block.nBits = GetNextWorkRequired(pindexPrev, &block, chainparams.GetConsensus());
+    }
+
     // Check for duplicate
     uint256 hash = block.GetHash();
     BlockMap::iterator miSelf = mapBlockIndex.find(hash);
@@ -3123,12 +3141,6 @@ static bool AcceptBlockHeader(const CBlockHeader& block, CValidationState& state
         if (!CheckBlockHeader(block, state, chainparams.GetConsensus()))
             return error("%s: Consensus::CheckBlockHeader: %s, %s", __func__, hash.ToString(), FormatStateMessage(state));
 
-        // Get prev block index
-        CBlockIndex* pindexPrev = nullptr;
-        BlockMap::iterator mi = mapBlockIndex.find(block.hashPrevBlock);
-        if (mi == mapBlockIndex.end())
-            return state.DoS(10, error("%s: prev block not found", __func__), 0, "prev-blk-not-found");
-        pindexPrev = (*mi).second;
         if (pindexPrev->nStatus & BLOCK_FAILED_MASK)
             return state.DoS(100, error("%s: prev block invalid", __func__), REJECT_INVALID, "bad-prevblk");
         if (!ContextualCheckBlockHeader(block, state, chainparams, pindexPrev, GetAdjustedTime()))
@@ -3148,6 +3160,10 @@ static bool AcceptBlockHeader(const CBlockHeader& block, CValidationState& state
                 }
             }
         }
+
+        if (is_new) {
+            *is_new = true;
+        }
     }
     if (pindex == nullptr)
         pindex = AddToBlockIndex(block);
@@ -3161,20 +3177,27 @@ static bool AcceptBlockHeader(const CBlockHeader& block, CValidationState& state
 }
 
 // Exposed wrapper for AcceptBlockHeader
-bool ProcessNewBlockHeaders(const std::vector<CBlockHeader>& headers, CValidationState& state, const CChainParams& chainparams, const CBlockIndex** ppindex, CBlockHeader *first_invalid)
+bool ProcessNewBlockHeaders(std::vector<CBlockHeader>& headers, CValidationState& state, const CChainParams& chainparams, const CBlockIndex** ppindex, CBlockHeader *first_invalid, bool* any_new, bool implied_prevhash, bool implied_difficulty)
 {
+    assert(!headers.empty());
+
     if (first_invalid != nullptr) first_invalid->SetNull();
+    if (any_new) {
+        *any_new = false;
+    }
     {
         LOCK(cs_main);
-        for (const CBlockHeader& header : headers) {
+        CBlockIndex* pindexPrev = nullptr;
+        for (CBlockHeader& header : headers) {
             CBlockIndex *pindex = nullptr; // Use a temp pindex instead of ppindex to avoid a const_cast
-            if (!AcceptBlockHeader(header, state, chainparams, &pindex)) {
+            if (!AcceptBlockHeader(header, state, chainparams, pindexPrev, &pindex, any_new, implied_prevhash, implied_difficulty)) {
                 if (first_invalid) *first_invalid = header;
                 return false;
             }
             if (ppindex) {
                 *ppindex = pindex;
             }
+            pindexPrev = pindex;
         }
     }
     NotifyHeaderTip();
@@ -3191,8 +3214,9 @@ static bool AcceptBlock(const std::shared_ptr<const CBlock>& pblock, CValidation
 
     CBlockIndex *pindexDummy = nullptr;
     CBlockIndex *&pindex = ppindex ? *ppindex : pindexDummy;
+    CBlockHeader header = block; // Copy to make mutable
 
-    if (!AcceptBlockHeader(block, state, chainparams, &pindex))
+    if (!AcceptBlockHeader(header, state, chainparams, nullptr /*pindexPrev*/, &pindex))
         return false;
 
     // Try to process all requested blocks that we don't have, but only

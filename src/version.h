@@ -9,8 +9,6 @@
  * network protocol versioning
  */
 
-static const int PROTOCOL_VERSION = 70015;
-
 //! initial proto version, to be increased after version/verack negotiation
 static const int INIT_PROTO_VERSION = 209;
 
@@ -44,5 +42,8 @@ static const int INVALID_CB_NO_BAN_VERSION = 70015;
 
 //! "headers" messages are encoded to omit implied fields
 static const int COMPACT_HEADERS_VERSION = 70016;
+
+//! default protocol version advertised to peers
+static const int PROTOCOL_VERSION = COMPACT_HEADERS_VERSION;
 
 #endif // BITCOIN_VERSION_H

@@ -2080,7 +2080,18 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
         // will re-announce the new block via headers (or compact blocks again)
         // in the SendMessages logic.
         nodestate->pindexBestHeaderSent = pindex ? pindex : chainActive.Tip();
-        connman->PushMessage(pfrom, msgMaker.Make(NetMsgType::HEADERS, vHeaders));
+
+        CSerializedNetMsg headers_msg;
+        if (pfrom->nVersion >= COMPACT_HEADERS_VERSION) {
+            uint256 prev_block;
+            if (!vHeaders.empty()) {
+                prev_block = vHeaders[0].hashPrevBlock;
+            }
+            headers_msg = msgMaker.Make(SERIALIZE_HEADER_COMPACT, NetMsgType::HEADERS, prev_block, vHeaders);
+        } else {
+            headers_msg = msgMaker.Make(NetMsgType::HEADERS, vHeaders);
+        }
+        connman->PushMessage(pfrom, std::move(headers_msg));
     }
 
 
@@ -3355,7 +3366,15 @@ bool PeerLogicValidation::SendMessages(CNode* pto, std::atomic<bool>& interruptM
                         LogPrint(BCLog::NET, "%s: sending header %s to peer=%d\n", __func__,
                                 vHeaders.front().GetHash().ToString(), pto->GetId());
                     }
-                    connman->PushMessage(pto, msgMaker.Make(NetMsgType::HEADERS, vHeaders));
+
+                    CSerializedNetMsg headers_msg;
+                    if (pto->nVersion >= COMPACT_HEADERS_VERSION) {
+                        headers_msg = msgMaker.Make(SERIALIZE_HEADER_COMPACT, NetMsgType::HEADERS,
+                                                    vHeaders[0].hashPrevBlock, vHeaders);
+                    } else {
+                        headers_msg = msgMaker.Make(NetMsgType::HEADERS, vHeaders);
+                    }
+                    connman->PushMessage(pto, std::move(headers_msg));
                     state.pindexBestHeaderSent = pBestIndex;
                 } else
                     fRevertToInv = true;

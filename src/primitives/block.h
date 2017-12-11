@@ -10,6 +10,8 @@
 #include <serialize.h>
 #include <uint256.h>
 
+static const int SERIALIZE_HEADER_COMPACT = 0x20000000;
+
 /** Nodes collect new transactions into a block, hash them into a hash tree,
  * and scan through nonce values to make the block's hash satisfy proof-of-work
  * requirements.  When they solve the proof-of-work, they broadcast the block
@@ -38,10 +40,14 @@ public:
     template <typename Stream, typename Operation>
     inline void SerializationOp(Stream& s, Operation ser_action) {
         READWRITE(this->nVersion);
-        READWRITE(hashPrevBlock);
+        if (!(s.GetVersion() & SERIALIZE_HEADER_COMPACT)) {
+            READWRITE(hashPrevBlock);
+        }
         READWRITE(hashMerkleRoot);
         READWRITE(nTime);
-        READWRITE(nBits);
+        if (!(s.GetVersion() & SERIALIZE_HEADER_COMPACT)) {
+            READWRITE(nBits);
+        }
         READWRITE(nNonce);
     }
 
@@ -94,7 +100,9 @@ public:
     template <typename Stream, typename Operation>
     inline void SerializationOp(Stream& s, Operation ser_action) {
         READWRITE(*(CBlockHeader*)this);
-        READWRITE(vtx);
+        if (!(s.GetVersion() & SERIALIZE_HEADER_COMPACT)) {
+            READWRITE(vtx);
+        }
     }
 
     void SetNull()

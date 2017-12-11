@@ -250,8 +250,13 @@ bool ProcessNewBlock(const CChainParams& chainparams, const std::shared_ptr<cons
  * @param[in]  chainparams The params for the chain we want to connect to
  * @param[out] ppindex If set, the pointer will be set to point to the last new block index object for the given headers
  * @param[out] first_invalid First header that fails validation, if one exists
+ * @param[out] any_new Whether any of the processed headers were previously unknown
+ * @param[in] implied_prevhash If set, only the first header has a valid hashPrevBlock and the rest
+ *      should be assigned based on chain context
+ * @param[in] implied_difficulty If set, the nBits header fields are invalid and should be
+ *      calculated based on chain context
  */
-bool ProcessNewBlockHeaders(const std::vector<CBlockHeader>& block, CValidationState& state, const CChainParams& chainparams, const CBlockIndex** ppindex=nullptr, CBlockHeader *first_invalid=nullptr);
+bool ProcessNewBlockHeaders(std::vector<CBlockHeader>& block, CValidationState& state, const CChainParams& chainparams, const CBlockIndex** ppindex=nullptr, CBlockHeader *first_invalid=nullptr, bool* any_new = nullptr, bool implied_prevhash = false, bool implied_difficulty = false);
 
 /** Check whether enough disk space is available for an incoming block */
 bool CheckDiskSpace(uint64_t nAdditionalBytes = 0);

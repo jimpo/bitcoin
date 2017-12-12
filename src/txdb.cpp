@@ -443,7 +443,25 @@ bool TxIndexDB::WriteTxns(const std::vector<std::pair<uint256, CDiskTxPos>>& v_p
     return WriteBatch(batch);
 }
 
-bool TxIndexDB::MigrateData(CBlockTreeDB& block_tree_db)
+bool TxIndexDB::ReadBestBlockHash(uint256& hash) const {
+    if (Read(DB_BEST_BLOCK, hash)) {
+        return true;
+    }
+
+    // Read might have failed either because key does not exist or due to an error.
+    // If the former, return value should still be true.
+    if (!Exists(DB_BEST_BLOCK)) {
+        hash.SetNull();
+        return true;
+    }
+    return false;
+}
+
+bool TxIndexDB::WriteBestBlockHash(const uint256& hash) {
+    return Write(DB_BEST_BLOCK, hash);
+}
+
+bool TxIndexDB::MigrateData(CBlockTreeDB& block_tree_db, const uint256& block_hash)
 {
     // The prior implementation of txindex was always in sync with block index
     // and presence was indicated with a boolean DB flag.
@@ -522,6 +540,9 @@ bool TxIndexDB::MigrateData(CBlockTreeDB& block_tree_db)
         return false;
     }
 
+    if (!WriteBestBlockHash(block_hash)) {
+        return error("%s: cannot write best block hash", __func__);
+    }
     if (!block_tree_db.WriteFlag("txindex", false)) {
         return error("%s: cannot write block index db flag", __func__);
     }

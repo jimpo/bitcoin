@@ -142,9 +142,15 @@ public:
     /// Write a batch of transaction positions to the DB.
     bool WriteTxns(const std::vector<std::pair<uint256, CDiskTxPos>>& v_pos);
 
+    /// Read the best block hash of the chain that the txindex is in sync with.
+    bool ReadBestBlockHash(uint256& hash) const;
+
+    /// Write the best block hash of the chain that the txindex is in sync with.
+    bool WriteBestBlockHash(const uint256& block_hash);
+
     /// Migrate txindex data from the block tree DB, where it may be for older nodes that have not
     /// been upgraded yet to the new database.
-    bool MigrateData(CBlockTreeDB& block_tree_db);
+    bool MigrateData(CBlockTreeDB& block_tree_db, const uint256& block_hash);
 };
 
 #endif // BITCOIN_TXDB_H

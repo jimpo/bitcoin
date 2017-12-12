@@ -126,4 +126,25 @@ public:
     bool LoadBlockIndexGuts(const Consensus::Params& consensusParams, std::function<CBlockIndex*(const uint256&)> insertBlockIndex);
 };
 
+/** Access to the block database (blocks/index/) */
+class TxIndexDB : public CDBWrapper
+{
+public:
+    explicit TxIndexDB(size_t n_cache_size, bool f_memory = false, bool f_wipe = false);
+
+    TxIndexDB(const TxIndexDB&) = delete;
+    TxIndexDB& operator=(const TxIndexDB&) = delete;
+
+    /// Read the disk location of the transaction data with the given hash. Returns false if the
+    /// transaction hash is not indexed.
+    bool ReadTxPos(const uint256& txid, CDiskTxPos& pos) const;
+
+    /// Write a batch of transaction positions to the DB.
+    bool WriteTxns(const std::vector<std::pair<uint256, CDiskTxPos>>& v_pos);
+
+    /// Migrate txindex data from the block tree DB, where it may be for older nodes that have not
+    /// been upgraded yet to the new database.
+    bool MigrateData(CBlockTreeDB& block_tree_db);
+};
+
 #endif // BITCOIN_TXDB_H

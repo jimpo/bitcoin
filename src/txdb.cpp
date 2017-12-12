@@ -424,3 +424,108 @@ bool CCoinsViewDB::Upgrade() {
     LogPrintf("[%s].\n", ShutdownRequested() ? "CANCELLED" : "DONE");
     return !ShutdownRequested();
 }
+
+TxIndexDB::TxIndexDB(size_t n_cache_size, bool f_memory, bool f_wipe) :
+    CDBWrapper(GetDataDir() / "indexes" / "txindex", n_cache_size, f_memory, f_wipe)
+{}
+
+bool TxIndexDB::ReadTxPos(const uint256 &txid, CDiskTxPos& pos) const
+{
+    return Read(std::make_pair(DB_TXINDEX, txid), pos);
+}
+
+bool TxIndexDB::WriteTxns(const std::vector<std::pair<uint256, CDiskTxPos>>& v_pos)
+{
+    CDBBatch batch(*this);
+    for (auto tuple : v_pos) {
+        batch.Write(std::make_pair(DB_TXINDEX, tuple.first), tuple.second);
+    }
+    return WriteBatch(batch);
+}
+
+bool TxIndexDB::MigrateData(CBlockTreeDB& block_tree_db)
+{
+    // The prior implementation of txindex was always in sync with block index
+    // and presence was indicated with a boolean DB flag.
+    bool f_migrate_index;
+    block_tree_db.ReadFlag("txindex", f_migrate_index);
+    if (!f_migrate_index) {
+        return true;
+    }
+
+    int64_t count = 0;
+    LogPrintf("Upgrading txindex database...\n");
+    LogPrintf("[0%%]...");
+    int report_done = 0;
+    size_t batch_size = 1 << 24;
+
+    CDBBatch batch_newdb(*this);
+    CDBBatch batch_olddb(block_tree_db);
+
+    std::pair<unsigned char, uint256> key;
+    std::pair<unsigned char, uint256> begin_key{DB_TXINDEX, uint256()};
+    std::pair<unsigned char, uint256> prev_key_newdb = begin_key;
+    std::pair<unsigned char, uint256> prev_key_olddb = begin_key;
+
+    std::unique_ptr<CDBIterator> pcursor(block_tree_db.NewIterator());
+    for (pcursor->Seek(begin_key); pcursor->Valid(); pcursor->Next()) {
+        boost::this_thread::interruption_point();
+        if (ShutdownRequested()) {
+            break;
+        }
+
+        if (!pcursor->GetKey(key)) {
+            break;
+        }
+        if (key.first != DB_TXINDEX) {
+            break;
+        }
+
+        // Log progress every 10%.
+        if (++count % 256 == 0) {
+            uint32_t high = 0x100 * *key.second.begin() + *(key.second.begin() + 1);
+            int percentage_done = (int)(high * 100.0 / 65536.0 + 0.5);
+            if (report_done < percentage_done/10) {
+                LogPrintf("[%d%%]...", percentage_done);
+                report_done = percentage_done/10;
+            }
+        }
+
+        CDiskTxPos value;
+        if (!pcursor->GetValue(value)) {
+            return error("%s: cannot parse txindex record", __func__);
+        }
+        batch_newdb.Write(key, value);
+        batch_olddb.Erase(key);
+
+        if (batch_newdb.SizeEstimate() > batch_size) {
+            WriteBatch(batch_newdb);
+            batch_newdb.Clear();
+            CompactRange(prev_key_newdb, key);
+            prev_key_newdb = key;
+        }
+        if (batch_olddb.SizeEstimate() > batch_size) {
+            block_tree_db.WriteBatch(batch_olddb);
+            batch_olddb.Clear();
+            block_tree_db.CompactRange(prev_key_olddb, key);
+            prev_key_olddb = key;
+        }
+    }
+
+    WriteBatch(batch_newdb);
+    CompactRange(begin_key, key);
+    block_tree_db.WriteBatch(batch_olddb);
+    block_tree_db.CompactRange(begin_key, key);
+
+    if (ShutdownRequested()) {
+        LogPrintf("[CANCELLED].\n");
+        return false;
+    }
+
+    if (!block_tree_db.WriteFlag("txindex", false)) {
+        return error("%s: cannot write block index db flag", __func__);
+    }
+
+    LogPrintf("[DONE].\n");
+    return true;
+}

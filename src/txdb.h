@@ -139,6 +139,10 @@ public:
 
     /// Read the best block hash of the chain that the txindex is in sync with.
     bool ReadBestBlockHash(uint256& hash) const;
+
+    /// Migrate txindex data from the block tree DB, where it may be for older nodes that have not
+    /// been upgraded yet to the new database.
+    bool MigrateData(CBlockTreeDB& block_tree_db, const uint256& block_hash);
 };
 
 #endif // BITCOIN_TXDB_H

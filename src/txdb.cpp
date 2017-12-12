@@ -458,3 +458,116 @@ bool TxIndexDB::ReadBestBlockHash(uint256& hash) const {
     }
     return false;
 }
+
+/*
+ * Safely persist a transfer of data from the old txindex database to the new one, and compact the
+ * range of keys updated. This is used internally by MigrateData.
+ */
+static void WriteTxIndexMigrationBatches(TxIndexDB& newdb, CBlockTreeDB& olddb,
+                                         CDBBatch& batch_newdb, CDBBatch& batch_olddb,
+                                         const std::pair<unsigned char, uint256>& begin_key,
+                                         const std::pair<unsigned char, uint256>& end_key)
+{
+    // Sync new DB changes to disk before deleting from old DB.
+    newdb.WriteBatch(batch_newdb, /*fSync=*/ true);
+    olddb.WriteBatch(batch_olddb);
+
+    batch_newdb.Clear();
+    batch_olddb.Clear();
+
+    newdb.CompactRange(begin_key, end_key);
+    olddb.CompactRange(begin_key, end_key);
+}
+
+bool TxIndexDB::MigrateData(CBlockTreeDB& block_tree_db, const uint256& block_hash)
+{
+    // The prior implementation of txindex was always in sync with block index
+    // and presence was indicated with a boolean DB flag. The flag signals
+    // whether any txindex data is present in the block_tree_db. If the flag is
+    // not set, either the txindex did not exist or was already migrated.
+    bool f_migrate_index = false;
+    block_tree_db.ReadFlag("txindex", f_migrate_index);
+    if (!f_migrate_index) {
+        return true;
+    }
+
+    int64_t count = 0;
+    LogPrintf("Upgrading txindex database...\n");
+    LogPrintf("[0%%]...");
+    uiInterface.ShowProgress(_("Upgrading txindex database"), 0, true);
+    int report_done = 0;
+    const size_t batch_size = 1 << 24; // 16 MiB
+
+    CDBBatch batch_newdb(*this);
+    CDBBatch batch_olddb(block_tree_db);
+
+    std::pair<unsigned char, uint256> key;
+    std::pair<unsigned char, uint256> begin_key{DB_TXINDEX, uint256()};
+    std::pair<unsigned char, uint256> prev_key = begin_key;
+
+    bool interrupted = false;
+    std::unique_ptr<CDBIterator> cursor(block_tree_db.NewIterator());
+    for (cursor->Seek(begin_key); cursor->Valid(); cursor->Next()) {
+        boost::this_thread::interruption_point();
+        if (ShutdownRequested()) {
+            interrupted = true;
+            break;
+        }
+
+        if (!cursor->GetKey(key)) {
+            return error("%s: cannot get key from valid cursor", __func__);
+        }
+        if (key.first != DB_TXINDEX) {
+            break;
+        }
+
+        // Log progress every 10%.
+        if (++count % 256 == 0) {
+            uint32_t high = 0x100 * *key.second.begin() + *(key.second.begin() + 1);
+            int percentage_done = (int)(high * 100.0 / 65536.0 + 0.5);
+            uiInterface.ShowProgress(_("Upgrading txindex database"), percentage_done, true);
+            if (report_done < percentage_done/10) {
+                LogPrintf("[%d%%]...", percentage_done);
+                report_done = percentage_done/10;
+            }
+        }
+
+        CDiskTxPos value;
+        if (!cursor->GetValue(value)) {
+            return error("%s: cannot parse txindex record", __func__);
+        }
+        batch_newdb.Write(key, value);
+        batch_olddb.Erase(key);
+
+        if (batch_newdb.SizeEstimate() > batch_size || batch_olddb.SizeEstimate() > batch_size) {
+            WriteTxIndexMigrationBatches(*this, block_tree_db,
+                                         batch_newdb, batch_olddb,
+                                         prev_key, key);
+            prev_key = key;
+        }
+    }
+
+    // If these final DB batches complete the migration, write the best block
+    // hash marker to signal that the new database is fully caught up to that
+    // point in the blockchain.
+    if (!interrupted) {
+        batch_newdb.Write(DB_BEST_BLOCK, block_hash);
+    }
+
+    WriteTxIndexMigrationBatches(*this, block_tree_db,
+                                 batch_newdb, batch_olddb,
+                                 begin_key, key);
+
+    if (interrupted) {
+        LogPrintf("[CANCELLED].\n");
+        return false;
+    }
+
+    uiInterface.ShowProgress("", 100, false);
+    if (!block_tree_db.WriteFlag("txindex", false)) {
+        return error("%s: cannot write block index db flag", __func__);
+    }
+
+    LogPrintf("[DONE].\n");
+    return true;
+}

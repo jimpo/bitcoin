@@ -424,3 +424,37 @@ bool CCoinsViewDB::Upgrade() {
     LogPrintf("[%s].\n", ShutdownRequested() ? "CANCELLED" : "DONE");
     return !ShutdownRequested();
 }
+
+TxIndexDB::TxIndexDB(size_t n_cache_size, bool f_memory, bool f_wipe) :
+    CDBWrapper(GetDataDir() / "indexes" / "txindex", n_cache_size, f_memory, f_wipe)
+{}
+
+bool TxIndexDB::ReadTxPos(const uint256 &txid, CDiskTxPos& pos) const
+{
+    return Read(std::make_pair(DB_TXINDEX, txid), pos);
+}
+
+bool TxIndexDB::WriteTxs(const std::vector<std::pair<uint256, CDiskTxPos>>& v_pos,
+                         const uint256& block_hash)
+{
+    CDBBatch batch(*this);
+    for (const auto& tuple : v_pos) {
+        batch.Write(std::make_pair(DB_TXINDEX, tuple.first), tuple.second);
+    }
+    batch.Write(DB_BEST_BLOCK, block_hash);
+    return WriteBatch(batch);
+}
+
+bool TxIndexDB::ReadBestBlockHash(uint256& hash) const {
+    if (Read(DB_BEST_BLOCK, hash)) {
+        return true;
+    }
+
+    // Read might have failed either because key does not exist or due to an error.
+    // If the former, return value should still be true.
+    if (!Exists(DB_BEST_BLOCK)) {
+        hash.SetNull();
+        return true;
+    }
+    return false;
+}

@@ -111,9 +111,6 @@ class CBlockTreeDB : public CDBWrapper
 public:
     explicit CBlockTreeDB(size_t nCacheSize, bool fMemory = false, bool fWipe = false);
 
-    CBlockTreeDB(const CBlockTreeDB&) = delete;
-    CBlockTreeDB& operator=(const CBlockTreeDB&) = delete;
-
     bool WriteBatchSync(const std::vector<std::pair<int, const CBlockFileInfo*> >& fileInfo, int nLastFile, const std::vector<const CBlockIndex*>& blockinfo);
     bool ReadBlockFileInfo(int nFile, CBlockFileInfo &info);
     bool ReadLastBlockFile(int &nFile);
@@ -124,6 +121,24 @@ public:
     bool WriteFlag(const std::string &name, bool fValue);
     bool ReadFlag(const std::string &name, bool &fValue);
     bool LoadBlockIndexGuts(const Consensus::Params& consensusParams, std::function<CBlockIndex*(const uint256&)> insertBlockIndex);
+};
+
+/** Access to the txindex database (indexes/txindex/) */
+class TxIndexDB : public CDBWrapper
+{
+public:
+    explicit TxIndexDB(size_t n_cache_size, bool f_memory = false, bool f_wipe = false);
+
+    /// Read the disk location of the transaction data with the given hash. Returns false if the
+    /// transaction hash is not indexed.
+    bool ReadTxPos(const uint256& txid, CDiskTxPos& pos) const;
+
+    /// Write a batch of transaction positions to the DB.
+    bool WriteTxs(const std::vector<std::pair<uint256, CDiskTxPos>>& v_pos,
+                  const uint256& block_hash);
+
+    /// Read the best block hash of the chain that the txindex is in sync with.
+    bool ReadBestBlockHash(uint256& hash) const;
 };
 
 #endif // BITCOIN_TXDB_H

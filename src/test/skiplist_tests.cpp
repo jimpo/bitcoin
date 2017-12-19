@@ -145,14 +145,20 @@ BOOST_AUTO_TEST_CASE(findearliestatleast_test)
 
 BOOST_AUTO_TEST_CASE(findearliestatleast_edge_test)
 {
+    std::list<uint256> hashes;
     std::list<CBlockIndex> blocks;
     for (unsigned int timeMax : {100, 100, 100, 200, 200, 200, 300, 300, 300}) {
         CBlockIndex* prev = blocks.empty() ? nullptr : &blocks.back();
         blocks.emplace_back();
-        blocks.back().nHeight = prev ? prev->nHeight + 1 : 0;
-        blocks.back().pprev = prev;
-        blocks.back().BuildSkip();
-        blocks.back().nTimeMax = timeMax;
+        CBlockIndex& block = blocks.back();
+        block.nHeight = prev ? prev->nHeight + 1 : 0;
+        block.pprev = prev;
+        block.BuildSkip();
+        block.nTimeMax = timeMax;
+
+        // Set the hash equal to the height
+        hashes.push_back(ArithToUint256(block.nHeight));
+        block.phashBlock = &hashes.back();
     }
 
     CChain chain;

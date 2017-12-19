@@ -3793,14 +3793,17 @@ bool LoadChainTip(const CChainParams& chainparams)
     BlockMap::iterator it = mapBlockIndex.find(pcoinsTip->GetBestBlock());
     if (it == mapBlockIndex.end())
         return false;
+    int64_t n_start_time = GetTimeMillis();
     chainActive.SetTip(it->second);
+    int64_t n_end_time = GetTimeMillis();
 
     g_chainstate.PruneBlockIndexCandidates();
 
-    LogPrintf("Loaded best chain: hashBestChain=%s height=%d date=%s progress=%f\n",
+    LogPrintf("Loaded best chain: hashBestChain=%s height=%d date=%s progress=%f time=%d\n",
         chainActive.Tip()->GetBlockHash().ToString(), chainActive.Height(),
         DateTimeStrFormat("%Y-%m-%d %H:%M:%S", chainActive.Tip()->GetBlockTime()),
-        GuessVerificationProgress(chainparams.TxData(), chainActive.Tip()));
+              GuessVerificationProgress(chainparams.TxData(), chainActive.Tip()),
+              n_end_time - n_start_time);
     return true;
 }
 

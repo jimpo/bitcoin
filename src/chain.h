@@ -431,10 +431,60 @@ public:
     }
 };
 
-/** An in-memory indexed chain of blocks. */
+/**
+ * An in-memory indexed chain of blocks. The chain also stores information to generate compact
+ * Merkle Mountain Range (MMR) commitments and proofs. MMR commitments allow proofs of inclusion of
+ * all headers below a particular height, and require minimal computation for each new block added
+ * to the chain.
+ */
 class CChain {
 private:
     std::vector<CBlockIndex*> vChain;
+
+    /**
+     * Contains MMR intermediate entries for each block. The number of entries each block has
+     * depends on its position in the chain.
+     *
+     * Consider an MMR with over a chain with six blocks, as shown below. Block 3 has three
+     * entries: the first commits just to block 3, the next to 2 and 3, and the top one to
+     * blocks 0-3. In order to save allocations and space, level 0 entries are the block hashes
+     * themselves and accessed by reference to the CBlockIndex.
+     *
+     *       .      <---- level 2 entries
+     *      /|
+     *     / |
+     *    /  |
+     *   .   .   .  <---- level 1 entries
+     *  /|  /|  /|
+     * / | / | / |
+     * . . . . . .  <---- level 0 entries
+     * 0 1 2 3 4 5
+     *
+     */
+    std::vector<std::vector<uint256>> m_mmr_entries;
+
+    /** Returns an intermediate MMR entry for the block at the given height. */
+    const uint256& GetMMREntry(int height, int entry) const
+    {
+        if (entry == 0) {
+            return *vChain[height]->phashBlock;
+        }
+        return m_mmr_entries[height][entry - 1];
+    }
+
+    /**
+     * Computes the commitment to the peak containing a particular block in a Merkle Mountain Range
+     * up to a root height.
+     */
+    uint256 ComputeMMRPeak(int header_height, int root_height,
+                           std::vector<uint256>* intermediate_entries,
+                           std::vector<uint256>* proof_branch) const;
+
+    /**
+     * Return the hashes for all MMR peaks that are included in a proof for a chain up to the root
+     * height.
+     */
+    std::vector<uint256> GetMMRPeaks(int height) const;
 
 public:
     /** Returns the index entry for the genesis block of this chain, or nullptr if none. */
@@ -489,6 +539,23 @@ public:
 
     /** Find the earliest block with timestamp equal or greater than the given. */
     CBlockIndex* FindEarliestAtLeast(int64_t nTime) const;
+
+    uint256 GenerateMMRCommitment(int root_height) const;
+
+    /**
+     * Returns a compact proof of inclusion of the block at the specified height in a chain up to
+     * root height. The proof branch consists of two separate merkle branches: one branch linking
+     * the header at the specified height into the MMR peak containing it, then one branch linking
+     * the peak into the chain commitment. Proof size and generation time is O(log(root_height)).
+     */
+    std::vector<uint256> GenerateMMRProof(int block_height, int root_height, uint256* root = nullptr) const;
 };
+
+/**
+ * Verify a Merkle Mountain Range proof that a particular block in included in a chain of height
+ * root_height.
+ */
+bool VerifyChainMMRProof(int block_height, int root_height, const uint256& block_hash,
+                         const uint256& root_commitment, const std::vector<uint256>& proof);
 
 #endif // BITCOIN_CHAIN_H

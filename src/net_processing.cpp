@@ -2697,6 +2697,75 @@ bool static ProcessMessage(CNode* pfrom, const std::string& strCommand, CDataStr
     }
 
 
+    else if (strCommand == NetMsgType::GETCHAINCOMMIT) {
+        uint32_t height;
+        CBlockLocator locator;
+        vRecv >> height >> locator;
+
+        LOCK(cs_main);
+
+        if (height > static_cast<uint32_t>(chainActive.Height())) {
+            LogPrint(BCLog::NET, "Ignoring \"getchaincommit\" request with height %d exceeding chain height. peer=%d\n",
+                     chainActive.Height(), pfrom->GetId());
+            return true;
+        }
+
+        const CBlockIndex* pindex = FindForkInGlobalIndex(chainActive, locator);
+        if (!pindex) {
+            LogPrint(BCLog::NET, "\"getchaincommit\" request with no matching blocks in locator. disconnect peer=%d\n",
+                     chainActive.Height(), pfrom->GetId());
+            pfrom->fDisconnect = true;
+            return true;
+        }
+
+        const uint256& commitment = GetMMRCommitment(height);
+        connman->PushMessage(pfrom, msgMaker.Make(NetMsgType::CHAINCOMMIT, height, pindex->GetBlockHash(), commitment));
+    }
+
+
+    else if (strCommand == NetMsgType::GETHEADERSV2) {
+        uint32_t start_height, commitment_height;
+        uint256 commitment;
+        vRecv >> start_height >> commitment_height >> commitment;
+
+        if (start_height > commitment_height) {
+            LogPrint(BCLog::NET, "Ignoring \"getheaders2\" with start_height %d exceeding commitment_height %d. peer=%d\n",
+                     start_height, commitment_height, pfrom->GetId());
+            return true;
+        }
+
+        uint32_t end_height = std::min(commitment_height, start_height + MAX_HEADERS_RESULTS - 1);
+
+        LOCK(cs_main);
+
+        std::vector<uint256> branch;
+
+        // If getheaders2 did not come with a commitment, leave the MMR branch empty.
+        if (!commitment.IsNull()) {
+            uint256 root;
+            branch = chainActive.GenerateMMRProof(end_height, commitment_height, &root);
+
+            if (root != commitment) {
+                LogPrint(BCLog::NET, "Ignoring \"getheaders2\" with start_height %d exceeding commitment_height %d. peer=%d\n",
+                         start_height, commitment_height, pfrom->GetId());
+
+                connman->PushMessage(pfrom, msgMaker.Make(NetMsgType::CHAINCOMMIT, commitment_height, root));
+                return true;
+            }
+        }
+
+        std::vector<uint256> headers;
+        headers.reserve(end_height - start_height + 1);
+        for (uint32_t height = start_height; height <= end_height; ++height) {
+            headers.push_back(chainActive[height]->GetBlockHeader());
+        }
+
+        CSerializedNetMsg msg = msgMaker.Make(NetMsgType::HEADERS2, start_height, commitment_height,
+                                              headers.front().hashPrevBlock, headers, branch);
+        connman->PushMessage(pfrom, msg);
+    }
+
+
     else if (strCommand == NetMsgType::PING)
     {
         if (pfrom->nVersion > BIP0031_VERSION)

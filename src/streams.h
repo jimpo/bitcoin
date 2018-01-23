@@ -138,6 +138,80 @@ private:
     size_t nPos;
 };
 
+/* Minimal stream for reading from an existing vector by reference
+ */
+class CVectorReader
+{
+private:
+    const int nType;
+    const int nVersion;
+    const std::vector<unsigned char>& vchData;
+    size_t nPos;
+
+public:
+
+/*
+ * @param[in]  nTypeIn Serialization Type
+ * @param[in]  nVersionIn Serialization Version (including any flags)
+ * @param[in]  vchDataIn  Referenced byte vector to overwrite/append
+ * @param[in]  nPosIn Starting position. Vector index where reads should start.
+ */
+    CVectorReader(int nTypeIn, int nVersionIn, const std::vector<unsigned char>& vchDataIn, size_t nPosIn)
+        : nType(nTypeIn), nVersion(nVersionIn), vchData(vchDataIn), nPos(0)
+    {
+        seek(nPosIn);
+    }
+
+/*
+ * (other params same as above)
+ * @param[in]  args  A list of items to deserialize starting at nPosIn.
+ */
+    template <typename... Args>
+    CVectorReader(int nTypeIn, int nVersionIn, const std::vector<unsigned char>& vchDataIn, size_t nPosIn,
+                  Args&&... args)
+        : CVectorReader(nTypeIn, nVersionIn, vchDataIn, nPosIn)
+    {
+        ::UnserializeMany(*this, std::forward<Args>(args)...);
+    }
+
+    template<typename T>
+    CVectorReader& operator>>(T& obj)
+    {
+        // Unserialize from this stream
+        ::Unserialize(*this, obj);
+        return (*this);
+    }
+
+    int GetVersion() const { return nVersion; }
+    int GetType() const { return nType; }
+
+    size_t size() const { return vchData.size() - nPos; }
+    bool empty() const { return vchData.size() == nPos; }
+
+    void read(char* pch, size_t nSize)
+    {
+        if (nSize == 0) {
+            return;
+        }
+
+        // Read from the beginning of the buffer
+        unsigned int nPosNext = nPos + nSize;
+        if (nPosNext > vchData.size()) {
+            throw std::ios_base::failure("CVectorReader::read(): end of data");
+        }
+        memcpy(pch, &vchData[nPos], nSize);
+        nPos = nPosNext;
+    }
+
+    void seek(size_t nSize)
+    {
+        nPos += nSize;
+        if (nPos > vchData.size()) {
+            throw std::ios_base::failure("CVectorReader::seek(): end of data");
+        }
+    }
+};
+
 /** Double ended buffer combining vector and stream-like interfaces.
  *
  * >> and << read and write unformatted data using the above serialization templates.

@@ -4,6 +4,8 @@
 
 #include <blockfilter.h>
 #include <hash.h>
+#include <primitives/transaction.h>
+#include <script/script.h>
 #include <streams.h>
 
 /// SerType used to serialize parameters in GCS filter encoding.
@@ -213,4 +215,88 @@ bool GCSFilter::MatchAny(const std::set<Element>& elements) const
     }
 
     return false;
+}
+
+static std::set<GCSFilter::Element> BasicFilterElements(const CBlock& block)
+{
+    std::set<GCSFilter::Element> elements;
+    for (const CTransactionRef& tx : block.vtx) {
+        // Include txid of each transaction.
+        const uint256& txid = tx->GetHash();
+        elements.emplace(txid.begin(), txid.end());
+
+        // Include previous outpoint of each input, except for coinbase.
+        if (!tx->IsCoinBase()) {
+            for (const CTxIn& txin : tx->vin) {
+                std::vector<unsigned char> ser_outpoint;
+                CVectorWriter(GCS_SER_TYPE, GCS_SER_VERSION, ser_outpoint, 0, txin.prevout);
+                elements.insert(std::move(ser_outpoint));
+            }
+        }
+
+        // Include all data pushes in output scripts.
+        for (const CTxOut& txout : tx->vout) {
+            // Skip unparseable scripts.
+            if (!txout.scriptPubKey.HasValidOps()) {
+                continue;
+            }
+
+            CScript::const_iterator pc = txout.scriptPubKey.begin();
+            opcodetype opcode_dummy;
+            std::vector<unsigned char> data;
+            while (txout.scriptPubKey.GetOp(pc, opcode_dummy, data)) {
+                if (!data.empty()) {
+                    elements.insert(std::move(data));
+                }
+            }
+        }
+    }
+
+    return elements;
+}
+
+static std::set<GCSFilter::Element> ExtendedFilterElements(const CBlock& block)
+{
+    std::set<GCSFilter::Element> elements;
+    for (const CTransactionRef& tx : block.vtx) {
+        if (!tx->IsCoinBase()) {
+            for (const CTxIn& txin : tx->vin) {
+                // Include all data pushes in input scripts.
+                CScript::const_iterator pc = txin.scriptSig.begin();
+                opcodetype opcode_dummy;
+                std::vector<unsigned char> data;
+                while (txin.scriptSig.GetOp(pc, opcode_dummy, data)) {
+                    if (!data.empty()) {
+                        elements.insert(std::move(data));
+                    }
+                }
+
+                // Include all script witnesses.
+                for (const auto& data : txin.scriptWitness.stack) {
+                    elements.insert(data);
+                }
+            }
+        }
+    }
+
+    return elements;
+}
+
+BlockFilter::BlockFilter(BlockFilterType filter_type, const CBlock& block)
+    : m_filter_type(filter_type), m_block_hash(block.GetHash())
+{
+    switch (m_filter_type) {
+    case BlockFilterType::BASIC:
+        m_filter = GCSFilter(m_block_hash.GetUint64(0), m_block_hash.GetUint64(1),
+                             BASIC_FILTER_FP_RATE, BasicFilterElements(block));
+        break;
+
+    case BlockFilterType::EXTENDED:
+        m_filter = GCSFilter(m_block_hash.GetUint64(0), m_block_hash.GetUint64(1),
+                             EXTENDED_FILTER_FP_RATE, ExtendedFilterElements(block));
+        break;
+
+    default:
+        throw std::invalid_argument("unknown filter_type");
+    }
 }

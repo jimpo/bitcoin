@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <vector>
 
+#include <primitives/block.h>
 #include <serialize.h>
 #include <uint256.h>
 
@@ -63,6 +64,40 @@ public:
      * efficient that checking Match on multiple elements separately.
      */
     bool MatchAny(const std::set<Element>& elements) const;
+};
+
+constexpr uint8_t BASIC_FILTER_FP_RATE = 20;
+constexpr uint8_t EXTENDED_FILTER_FP_RATE = 20;
+
+enum BlockFilterType : uint8_t
+{
+    BASIC = 0,
+    EXTENDED = 1,
+};
+
+/**
+ * Complete block filter struct as defined in BIP 157.
+ */
+class BlockFilter
+{
+private:
+    BlockFilterType m_filter_type;
+    uint256 m_block_hash;
+    GCSFilter m_filter;
+
+public:
+
+    // Construct a new BlockFilter of the specified type from a block.
+    BlockFilter(BlockFilterType filter_type, const CBlock& block);
+
+    BlockFilterType GetFilterType() const { return m_filter_type; }
+
+    const GCSFilter& GetFilter() const { return m_filter; }
+
+    const std::vector<unsigned char>& GetEncodedFilter() const
+    {
+        return m_filter.GetEncoded();
+    }
 };
 
 #endif // BITCOIN_BLOCKFILTER_H

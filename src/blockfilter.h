@@ -76,7 +76,8 @@ enum BlockFilterType : uint8_t
 };
 
 /**
- * Complete block filter struct as defined in BIP 157.
+ * Complete block filter struct as defined in BIP 157. Serialization matches
+ * payload of "cfilter" messages.
  */
 class BlockFilter
 {
@@ -97,6 +98,37 @@ public:
     const std::vector<unsigned char>& GetEncodedFilter() const
     {
         return m_filter.GetEncoded();
+    }
+
+    template <typename Stream>
+    void Serialize(Stream& s) const {
+        s << m_block_hash
+          << static_cast<uint8_t>(m_filter_type)
+          << m_filter.GetEncoded();
+    }
+
+    template <typename Stream>
+    void Unserialize(Stream& s) {
+        std::vector<unsigned char> encoded_filter;
+        uint8_t filter_type;
+
+        s >> m_block_hash
+          >> filter_type
+          >> encoded_filter;
+
+        m_filter_type = static_cast<BlockFilterType>(filter_type);
+
+        switch (m_filter_type) {
+        case BlockFilterType::BASIC:
+            m_filter = GCSFilter(m_block_hash.GetUint64(0), m_block_hash.GetUint64(1),
+                                 BASIC_FILTER_FP_RATE, std::move(encoded_filter));
+            break;
+
+        case BlockFilterType::EXTENDED:
+            m_filter = GCSFilter(m_block_hash.GetUint64(0), m_block_hash.GetUint64(1),
+                                 EXTENDED_FILTER_FP_RATE, std::move(encoded_filter));
+            break;
+        }
     }
 };
 

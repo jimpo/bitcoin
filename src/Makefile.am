@@ -194,6 +194,7 @@ libbitcoin_server_a_SOURCES = \
   addrman.cpp \
   bloom.cpp \
   blockencodings.cpp \
+  blockfilter.cpp \
   chain.cpp \
   checkpoints.cpp \
   consensus/tx_verify.cpp \

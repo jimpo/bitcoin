@@ -2,12 +2,16 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <test/data/blockfilters.json.h>
 #include <test/test_bitcoin.h>
 
 #include <blockfilter.h>
+#include <core_io.h>
 #include <random.h>
 #include <serialize.h>
 #include <streams.h>
+#include <univalue.h>
+#include <utilstrencodings.h>
 
 #include <boost/test/unit_test.hpp>
 
@@ -67,6 +71,48 @@ BOOST_AUTO_TEST_CASE(blockfilter_basic_test)
     GCSFilter::Element coinbase_prevout_element;
     CVectorWriter(SER_NETWORK, 0, coinbase_prevout_element, 0, coinbase_prevout);
     BOOST_CHECK(!filter.Match(coinbase_prevout_element));
+}
+
+BOOST_AUTO_TEST_CASE(blockfilters_json_test)
+{
+    UniValue json;
+    std::string json_data(json_tests::blockfilters,
+                          json_tests::blockfilters + sizeof(json_tests::blockfilters));
+    if (!json.read(json_data) || !json.isArray()) {
+        BOOST_ERROR("Parse error.");
+        return;
+    }
+
+    const UniValue& tests = json.get_array();
+    for (unsigned int i = 0; i < tests.size(); i++) {
+        UniValue test = tests[i];
+        std::string strTest = test.write();
+
+        if (test.size() == 1) {
+            continue;
+        } else if (test.size() < 9) {
+            BOOST_ERROR("Bad test: " << strTest);
+            continue;
+        }
+
+        unsigned int pos = 0;
+        /*int block_height =*/ test[pos++].get_int();
+        /*uint256 block_hash =*/ ParseHashUV(test[pos++], "block_hash");
+        CBlock block;
+        BOOST_REQUIRE(DecodeHexBlk(block, test[pos++].get_str()));
+        uint256 prev_filter_header_basic = ParseHashUV(test[pos++], "prev_filter_header_basic");
+        /*uint256 prev_filter_header_ext =*/ ParseHashUV(test[pos++], "prev_filter_header_ext");
+        std::vector<unsigned char> filter_basic = ParseHex(test[pos++].get_str());
+        std::vector<unsigned char> filter_ext = ParseHex(test[pos++].get_str());
+        uint256 filter_header_basic = ParseHashUV(test[pos++], "filter_header_basic");
+        /*uint256 filter_header_ext =*/ ParseHashUV(test[pos++], "filter_header_ext");
+
+        BlockFilter computed_filter_basic(BlockFilterType::BASIC, block);
+        BOOST_CHECK(computed_filter_basic.GetFilter().GetEncoded() == filter_basic);
+
+        uint256 computed_header_basic = computed_filter_basic.ComputeHeader(prev_filter_header_basic);
+        BOOST_CHECK(computed_header_basic == filter_header_basic);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

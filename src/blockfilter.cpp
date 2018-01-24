@@ -4,6 +4,8 @@
 
 #include <blockfilter.h>
 #include <hash.h>
+#include <primitives/transaction.h>
+#include <script/script.h>
 #include <streams.h>
 
 /// SerType used to serialize parameters in GCS filter encoding.
@@ -196,4 +198,44 @@ bool GCSFilter::MatchAny(const std::set<Element>& elements) const
 {
     const std::vector<uint64_t> queries = BuildHashedSet(elements);
     return MatchInternal(queries.data(), queries.size());
+}
+
+static std::set<GCSFilter::Element> BasicFilterElements(const CBlock& block)
+{
+    std::set<GCSFilter::Element> elements;
+    for (const CTransactionRef& tx : block.vtx) {
+        // Include txid of each transaction.
+        const uint256& txid = tx->GetHash();
+        elements.emplace(txid.begin(), txid.end());
+
+        // Include previous outpoint of each input, except for coinbase.
+        if (!tx->IsCoinBase()) {
+            for (const CTxIn& txin : tx->vin) {
+                std::vector<unsigned char> ser_outpoint;
+                CVectorWriter(GCS_SER_TYPE, GCS_SER_VERSION, ser_outpoint, 0, txin.prevout);
+                elements.insert(std::move(ser_outpoint));
+            }
+        }
+
+        // Include all output scripts.
+        for (const CTxOut& txout : tx->vout) {
+            elements.emplace(txout.scriptPubKey.begin(), txout.scriptPubKey.end());
+        }
+    }
+
+    return elements;
+}
+
+BlockFilter::BlockFilter(BlockFilterType filter_type, const CBlock& block)
+    : m_filter_type(filter_type), m_block_hash(block.GetHash())
+{
+    switch (m_filter_type) {
+    case BlockFilterType::BASIC:
+        m_filter = GCSFilter(m_block_hash.GetUint64(0), m_block_hash.GetUint64(1),
+                             BASIC_FILTER_FP_RATE, BasicFilterElements(block));
+        break;
+
+    default:
+        throw std::invalid_argument("unknown filter_type");
+    }
 }

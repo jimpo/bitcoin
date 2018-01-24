@@ -26,7 +26,13 @@ private:
     uint64_t m_siphash_k1;
     uint8_t m_P;
     uint64_t m_N;
+    uint64_t m_F;
     std::vector<unsigned char> m_encoded;
+
+    /** Hash a data element to an integer in the range [0, F). */
+    uint64_t HashToRange(const Element& element) const;
+
+    std::vector<uint64_t> BuildHashedSet(const std::set<Element>& elements) const;
 
 public:
 

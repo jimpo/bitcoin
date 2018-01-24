@@ -153,3 +153,64 @@ GCSFilter::GCSFilter(uint64_t siphash_k0, uint64_t siphash_k1, uint8_t P,
 
     bitwriter.Flush();
 }
+
+bool GCSFilter::Match(const GCSFilter::Element& element) const
+{
+    uint64_t query = HashToRange(element);
+
+    CVectorReader stream(GCS_SER_TYPE, GCS_SER_VERSION, m_encoded, 0);
+
+    // Seek forward by size of N
+    uint64_t N = ReadCompactSize(stream);
+    assert(N == m_N);
+
+    BitStreamReader<CVectorReader> bitreader(stream);
+
+    uint64_t value = 0;
+    for (uint64_t i = 0; i < m_N; i++) {
+        uint64_t delta = GolombRiceDecode(bitreader, m_P);
+        value += delta;
+
+        if (query == value) {
+            return true;
+        } else if (query < value) {
+            break;
+        }
+    }
+
+    return false;
+}
+
+bool GCSFilter::MatchAny(const std::set<Element>& elements) const
+{
+    const std::vector<uint64_t>&& queries = BuildHashedSet(elements);
+
+    CVectorReader stream(GCS_SER_TYPE, GCS_SER_VERSION, m_encoded, 0);
+
+    // Seek forward by size of N
+    uint64_t N = ReadCompactSize(stream);
+    assert(N == m_N);
+
+    BitStreamReader<CVectorReader> bitreader(stream);
+
+    uint64_t value = 0;
+    auto query_it = queries.begin();
+    for (uint64_t i = 0; i < m_N; i++) {
+        uint64_t delta = GolombRiceDecode(bitreader, m_P);
+        value += delta;
+
+        while (true) {
+            if (query_it == queries.end()) {
+                return false;
+            } else if (*query_it == value) {
+                return true;
+            } else if (*query_it > value) {
+                break;
+            }
+
+            query_it++;
+        }
+    }
+
+    return false;
+}

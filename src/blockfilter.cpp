@@ -255,6 +255,32 @@ static std::set<GCSFilter::Element> BasicFilterElements(const CBlock& block)
     return elements;
 }
 
+static std::set<GCSFilter::Element> Basic2FilterElements(const CBlock& block)
+{
+    std::set<GCSFilter::Element> elements;
+    for (const CTransactionRef& tx : block.vtx) {
+        // Include txid of each transaction.
+        const uint256& txid = tx->GetHash();
+        elements.emplace(txid.begin(), txid.end());
+
+        // Include previous outpoint of each input, except for coinbase.
+        if (!tx->IsCoinBase()) {
+            for (const CTxIn& txin : tx->vin) {
+                std::vector<unsigned char> ser_outpoint;
+                CVectorWriter(GCS_SER_TYPE, GCS_SER_VERSION, ser_outpoint, 0, txin.prevout);
+                elements.insert(std::move(ser_outpoint));
+            }
+        }
+
+        // Include all data pushes in output scripts.
+        for (const CTxOut& txout : tx->vout) {
+            elements.emplace(txout.scriptPubKey.begin(), txout.scriptPubKey.end());
+        }
+    }
+
+    return elements;
+}
+
 static std::set<GCSFilter::Element> ExtendedFilterElements(const CBlock& block)
 {
     std::set<GCSFilter::Element> elements;
@@ -294,6 +320,11 @@ BlockFilter::BlockFilter(BlockFilterType filter_type, const CBlock& block)
     case BlockFilterType::EXTENDED:
         m_filter = GCSFilter(m_block_hash.GetUint64(0), m_block_hash.GetUint64(1),
                              EXTENDED_FILTER_FP_RATE, ExtendedFilterElements(block));
+        break;
+
+    case BlockFilterType::BASIC2:
+        m_filter = GCSFilter(m_block_hash.GetUint64(0), m_block_hash.GetUint64(1),
+                             BASIC_FILTER_FP_RATE, Basic2FilterElements(block));
         break;
 
     default:

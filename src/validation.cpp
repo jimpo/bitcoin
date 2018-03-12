@@ -6,6 +6,7 @@
 #include <validation.h>
 
 #include <arith_uint256.h>
+#include <blockfilter.h>
 #include <chain.h>
 #include <chainparams.h>
 #include <checkpoints.h>
@@ -4310,10 +4311,28 @@ bool LoadExternalBlockFile(const CChainParams& chainparams, FILE* fileIn, CDiskB
                 if (mapBlockIndex.count(hash) == 0 || (mapBlockIndex[hash]->nStatus & BLOCK_HAVE_DATA) == 0) {
                     LOCK(cs_main);
                     CValidationState state;
-                    if (g_chainstate.AcceptBlock(pblock, state, chainparams, nullptr, true, dbp, nullptr))
+                    if (g_chainstate.AcceptBlock(pblock, state, chainparams, nullptr, true, dbp, nullptr)) {
+
                         nLoaded++;
+                        BlockFilter basic_filter(BlockFilterType::BASIC, block);
+                        BlockFilter extended_filter(BlockFilterType::EXTENDED, block);
+                        BlockFilter basic2_filter(BlockFilterType::BASIC2, block);
+
+                        int64_t size_without_witness = ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION | SERIALIZE_TRANSACTION_NO_WITNESS);
+                        int64_t size_with_witness = ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION);
+                        int64_t basic_filter_size = ::GetSerializeSize(basic_filter, SER_NETWORK, PROTOCOL_VERSION);
+                        int64_t extended_filter_size = ::GetSerializeSize(extended_filter, SER_NETWORK, PROTOCOL_VERSION);
+                        int64_t basic2_filter_size = ::GetSerializeSize(basic2_filter, SER_NETWORK, PROTOCOL_VERSION);
+
+                        LogPrintf("Filter sizes:%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
+                                  mapBlockIndex[hash]->nHeight,
+                                  size_without_witness, size_with_witness,
+                                  basic_filter_size, extended_filter_size, basic2_filter_size,
+                                  basic_filter.GetFilter().GetN(), extended_filter.GetFilter().GetN(), basic2_filter.GetFilter().GetN());
+                    }
                     if (state.IsError())
                         break;
+
                 } else if (hash != chainparams.GetConsensus().hashGenesisBlock && mapBlockIndex[hash]->nHeight % 1000 == 0) {
                     LogPrint(BCLog::REINDEX, "Block Import: already had block %s at height %d\n", hash.ToString(), mapBlockIndex[hash]->nHeight);
                 }
@@ -4348,6 +4367,22 @@ bool LoadExternalBlockFile(const CChainParams& chainparams, FILE* fileIn, CDiskB
                             {
                                 nLoaded++;
                                 queue.push_back(pblockrecursive->GetHash());
+
+                                BlockFilter basic_filter(BlockFilterType::BASIC, block);
+                                BlockFilter extended_filter(BlockFilterType::EXTENDED, block);
+                                BlockFilter basic2_filter(BlockFilterType::BASIC2, block);
+
+                                int64_t size_without_witness = ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION | SERIALIZE_TRANSACTION_NO_WITNESS);
+                                int64_t size_with_witness = ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION);
+                                int64_t basic_filter_size = ::GetSerializeSize(basic_filter, SER_NETWORK, PROTOCOL_VERSION);
+                                int64_t extended_filter_size = ::GetSerializeSize(extended_filter, SER_NETWORK, PROTOCOL_VERSION);
+                                int64_t basic2_filter_size = ::GetSerializeSize(basic2_filter, SER_NETWORK, PROTOCOL_VERSION);
+
+                                LogPrintf("Filter sizes:%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
+                                          mapBlockIndex[hash]->nHeight,
+                                          size_without_witness, size_with_witness,
+                                          basic_filter_size, extended_filter_size, basic2_filter_size,
+                                          basic_filter.GetFilter().GetN(), extended_filter.GetFilter().GetN(), basic2_filter.GetFilter().GetN());
                             }
                         }
                         range.first++;

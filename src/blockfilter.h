@@ -73,6 +73,7 @@ enum BlockFilterType : uint8_t
 {
     BASIC = 0,
     EXTENDED = 1,
+    BASIC2 = 2,
 };
 
 /**
@@ -109,7 +110,7 @@ public:
     template <typename Stream>
     void Serialize(Stream& s) const {
         s << m_block_hash
-          << static_cast<uint8_t>(m_filter_type);
+          << static_cast<uint8_t>(m_filter_type)
           << m_filter.GetEncoded();
     }
 

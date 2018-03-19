@@ -6,6 +6,7 @@
 #include <rpc/blockchain.h>
 
 #include <amount.h>
+#include <blockfilter.h>
 #include <chain.h>
 #include <chainparams.h>
 #include <checkpoints.h>
@@ -1451,6 +1452,59 @@ UniValue preciousblock(const JSONRPCRequest& request)
     return NullUniValue;
 }
 
+UniValue getblockfilter(const JSONRPCRequest& request)
+{
+    if (request.fHelp || request.params.size() != 2) {
+        throw std::runtime_error(
+            "getblockfilter \"blockhash\" \"filtertype\"\n"
+            "\nRetrieve a BIP 157 content filter for a particular block.\n"
+            "\nArguments:\n"
+            "1. \"blockhash\"   (string, required) the hash of the block\n"
+            "2. \"filtertype\"  (integer, required) the type code of the filter\n"
+            "\nResult:\n"
+            "{\n"
+            "  \"filter\" : (string) the hex-encoded filter data\n"
+            "  \"header\" : (string) the hex-encoded filter header\n"
+            "}\n"
+            "\nExamples:\n"
+            + HelpExampleCli("getblockfilter", "\"00000000c937983704a73af28acdec37b049d214adbda81d7e2a3dd146f6ed09\" 0")
+        );
+    }
+
+    uint256 block_hash = uint256S(request.params[0].get_str());
+    BlockFilterType filtertype = static_cast<BlockFilterType>(request.params[1].get_int());
+
+    const CBlockIndex* block_index;
+    {
+        LOCK(cs_main);
+        block_index = LookupBlockIndex(block_hash);
+        if (!block_index) {
+            throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Block not found");
+        }
+
+        if (fHavePruned && !(block_index->nStatus & BLOCK_HAVE_DATA) && block_index->nTx > 0) {
+            throw JSONRPCError(RPC_MISC_ERROR, "Block not available (pruned data)");
+        }
+    }
+
+    CBlock block;
+    if (!ReadBlockFromDisk(block, block_index, Params().GetConsensus())) {
+        // Block not found on disk. This could be because we have the block
+        // header in our index but don't have the block (for example if a
+        // non-whitelisted node sends us an unrequested long chain of valid
+        // blocks, we add the headers to our index, but don't accept the
+        // block).
+        throw JSONRPCError(RPC_MISC_ERROR, "Block not found on disk");
+    }
+
+    BlockFilter block_filter(filtertype, block);
+
+    UniValue ret(UniValue::VOBJ);
+    ret.pushKV("filter", HexStr(block_filter.GetEncodedFilter()));
+    // TODO: Push the filter header once the filters are indexed.
+    return ret;
+}
+
 UniValue invalidateblock(const JSONRPCRequest& request)
 {
     if (request.fHelp || request.params.size() != 1)
@@ -1645,6 +1699,7 @@ static const CRPCCommand commands[] =
     { "blockchain",         "verifychain",            &verifychain,            {"checklevel","nblocks"} },
 
     { "blockchain",         "preciousblock",          &preciousblock,          {"blockhash"} },
+    { "blockchain",         "getblockfilter",         &getblockfilter,         {"blockhash", "filtertype"} },
 
     /* Not shown in help */
     { "hidden",             "invalidateblock",        &invalidateblock,        {"blockhash"} },

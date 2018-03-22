@@ -13,23 +13,24 @@
 
 class MerkleSet
 {
+public:
     enum UpdateOp {
         INSERT,
         REMOVE
     };
 
-private:
-    class Impl;
-    std::unique_ptr<Impl> m_impl;
-
-public:
     MerkleSet(size_t chunk_size);
+    ~MerkleSet();
 
     std::vector<bool> Update(std::vector<std::pair<uint256, UpdateOp>> hashes);
 
     bool Has(uint256 hash, std::vector<uint256>* proof) const;
 
     uint256 RootHash() const;
+
+private:
+    class Impl;
+    std::unique_ptr<Impl> m_impl;
 };
 
 #endif // BITCOIN_MERKLESET_H

@@ -3,10 +3,12 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include <algorithm>
+#include <iostream>
 
 #include <crypto/sha256.h>
 #include <merkleset.h>
 #include <util.h>
+#include <utilstrencodings.h>
 
 namespace {
 
@@ -110,9 +112,8 @@ private:
     size_t m_chunk_size;
 
     unsigned char* AllocateChunk() const;
-    bool DeallocateChunk(void* chunk);
+    bool DeallocateChunk(unsigned char* chunk) const;
 
-    void AddInternal(std::deque<Node>& node_stack, const hash_ref position, const hash_ref insert_hash);
     bool AddHashSingle(std::deque<Node>& node_stack, const hash_ref insert_hash);
     void AddHashPair(std::deque<Node>& node_stack, const hash_ref hash1, const hash_ref hash2);
     void AddHashTriple(std::deque<Node>& node_stack, const hash_ref hash1, const hash_ref hash2, const hash_ref hash3);
@@ -136,6 +137,8 @@ MerkleSet::MerkleSet(size_t chunk_size)
     : m_impl(MakeUnique<MerkleSet::Impl>(chunk_size))
 {}
 
+MerkleSet::~MerkleSet() = default;
+
 std::vector<bool> MerkleSet::Update(std::vector<std::pair<uint256, UpdateOp>> hashes)
 {
     return m_impl->Update(std::move(hashes));
@@ -150,6 +153,7 @@ uint256 MerkleSet::RootHash() const
 {
     return m_impl->RootHash();
 }
+
 Node::Node() : Node(nullptr, nullptr, nullptr, 0) {}
 
 Node::Node(hash_ref parent_hash, unsigned char** chunk_ref, unsigned char* data, size_t size)
@@ -171,7 +175,9 @@ bool Node::IsTerminal()
 
 MerkleSet::Impl::Impl(size_t chunk_size)
     : m_root_chunk(nullptr), m_chunk_size(chunk_size)
-{}
+{
+    memset(m_root_hash, 0, sizeof(m_root_hash));
+}
 
 MerkleSet::Impl::~Impl()
 {
@@ -196,87 +202,102 @@ std::vector<bool> MerkleSet::Impl::Update(std::vector<std::pair<uint256, MerkleS
     result.reserve(hashes.size());
 
     for (auto& update : hashes) {
+        // Cannot add empty hashes, as they would be confused with terminals.
+        if (update.first.IsNull()) {
+            result.push_back(false);
+            continue;
+        }
+
         hash_ref hash = update.first.begin();
         bool modified;
 
+        std::cout << "Adding: " << HexStr(hash, hash + 32) << std::endl;
+        std::cout << "Position: " << HexStr(position, position + 32) << std::endl;
+
         switch (update.second) {
         case MerkleSet::UpdateOp::INSERT:
-            switch (GetType(m_root_hash)) {
-            case HashType::EMPTY:
-                SetHash(m_root_hash, hash);
-                modified = true;
-                break;
+            if (!node_stack.empty()) {
+                AdvancePosition(node_stack, position, hash);
+                position = hash;
+                modified = AddHashSingle(node_stack, hash);
 
-            case HashType::TERMINAL:
-                if (HashEqual(m_root_hash, hash)) {
-                    modified = false;
+            } else {
+                switch (GetType(m_root_hash)) {
+                case HashType::EMPTY:
+                    SetHash(m_root_hash, hash);
+                    modified = true;
                     break;
-                }
 
-                assert(m_root_chunk == nullptr);
-                m_root_chunk = AllocateChunk();
-                node_stack.emplace_back(m_root_hash, &m_root_chunk, m_root_chunk, m_chunk_size);
-
-                {
-                    hash_ref hash1 = hash, hash2 = m_root_hash;
-                    if (HashCompare(hash1, hash2) > 0) {
-                        std::swap(hash1, hash2);
+                case HashType::TERMINAL:
+                    if (HashEqual(m_root_hash, hash)) {
+                        modified = false;
+                        break;
                     }
 
-                    AddHashPair(node_stack, hash1, hash2);
-                }
+                    assert(m_root_chunk == nullptr);
+                    m_root_chunk = AllocateChunk();
+                    node_stack.emplace_back(m_root_hash, &m_root_chunk, m_root_chunk, m_chunk_size);
 
-                // Set root hash type to middle even though hash is invalid so that the next iteration
-                // of the outer loop goes into the correct clause. The hash will be recomputed when the
-                // node stack is unwound at the bottom of this method.
-                SetType(m_root_hash, HashType::MIDDLE);
-                modified = true;
-                break;
+                    {
+                        hash_ref hash1 = hash, hash2 = m_root_hash;
+                        if (HashCompare(hash1, hash2) > 0) {
+                            std::swap(hash1, hash2);
+                        }
 
-            case HashType::MIDDLE:
-                if (node_stack.empty()) {
+                        AddHashPair(node_stack, hash1, hash2);
+                    }
+
+                    modified = true;
+                    break;
+
+                case HashType::MIDDLE:
                     assert(m_root_chunk != nullptr);
                     node_stack.emplace_back(m_root_hash, &m_root_chunk, m_root_chunk, m_chunk_size);
+
+                    AdvancePosition(node_stack, position, hash);
+                    position = hash;
+                    modified = AddHashSingle(node_stack, hash);
+                    break;
+
+                default:
+                    throw std::logic_error("Unhandled HashType");
+
                 }
-
-                AdvancePosition(node_stack, position, hash);
-                modified = AddHashSingle(node_stack, hash);
-                break;
-
-            default:
-                throw std::logic_error("Unhandled HashType");
-
             }
             break;
 
         case MerkleSet::UpdateOp::REMOVE:
-            switch (GetType(m_root_hash)) {
-            case HashType::EMPTY:
-                modified = false;
-                break;
+            if (!node_stack.empty()) {
+                AdvancePosition(node_stack, position, hash);
+                modified = AddHashSingle(node_stack, hash);
 
-            case HashType::TERMINAL:
-                if (HashEqual(m_root_hash, hash)) {
-                    modified = true;
-                    SetType(m_root_hash, HashType::EMPTY);
-                } else {
+            } else {
+                switch (GetType(m_root_hash)) {
+                case HashType::EMPTY:
                     modified = false;
-                }
-                break;
+                    break;
 
-            case HashType::MIDDLE:
-                if (node_stack.empty()) {
+                case HashType::TERMINAL:
+                    if (HashEqual(m_root_hash, hash)) {
+                        modified = true;
+                        SetType(m_root_hash, HashType::EMPTY);
+                    } else {
+                        modified = false;
+                    }
+                    break;
+
+                case HashType::MIDDLE:
                     assert(m_root_chunk != nullptr);
                     node_stack.emplace_back(m_root_hash, &m_root_chunk, m_root_chunk, m_chunk_size);
+
+                    AdvancePosition(node_stack, position, hash);
+                    modified = RemoveHash(node_stack, hash);
+                    break;
+
+                default:
+                    throw std::logic_error("Unhandled HashType");
+
                 }
-
-                AdvancePosition(node_stack, position, hash);
-                modified = RemoveHash(node_stack, hash);
-                break;
-
-            default:
-                throw std::logic_error("Unhandled HashType");
-
             }
             break;
 
@@ -285,6 +306,7 @@ std::vector<bool> MerkleSet::Impl::Update(std::vector<std::pair<uint256, MerkleS
 
         }
 
+        std::cout << "Modified: " << modified << std::endl;
         result.push_back(modified);
     }
 
@@ -383,6 +405,8 @@ bool MerkleSet::Impl::AddHashSingle(std::deque<Node>& node_stack, const hash_ref
 {
     Node& node = node_stack.back();
     int index = node_stack.size();
+
+    std::cout << "Single: " << index << std::endl;
 
     hash_ref node_hash, other_node_hash;
     Node child_node;
@@ -510,6 +534,8 @@ void MerkleSet::Impl::AddHashPair(std::deque<Node>& node_stack, const hash_ref h
     hash_ref left_hash = node.LeftHash();
     hash_ref right_hash = node.RightHash();
 
+    std::cout << "Pair: " << node_stack.size() << std::endl;
+
     assert(GetType(left_hash) == HashType::EMPTY);
     assert(GetType(right_hash) == HashType::EMPTY);
     assert(GetType(hash1) == HashType::TERMINAL);
@@ -523,6 +549,8 @@ void MerkleSet::Impl::AddHashTriple(std::deque<Node>& node_stack, const hash_ref
 {
     Node& node = node_stack.back();
     int index = node_stack.size();
+
+    std::cout << "Triple: " << node_stack.size() << std::endl;
 
     assert(GetType(node.LeftHash()) == HashType::EMPTY);
     assert(GetType(node.RightHash()) == HashType::EMPTY);
@@ -575,21 +603,40 @@ void MerkleSet::Impl::PushNode(std::deque<Node>& node_stack, Node& node)
     }
 }
 
-unsigned char* MerkleSet::Impl::AllocateChunk() const
-{
-    return new unsigned char[m_chunk_size];
-}
-
 void MerkleSet::Impl::ClearNode(std::deque<Node>& node_stack)
 {
     Node& node = node_stack.back();
     if (node.m_chunk_ref) {
-        // TODO: DeallocateChunk.
-        delete *node.m_chunk_ref;
+        DeallocateChunk(*node.m_chunk_ref);
         *node.m_chunk_ref = nullptr;
     } else {
         SetType(node.LeftHash(), HashType::EMPTY);
         SetType(node.RightHash(), HashType::EMPTY);
     }
     node_stack.pop_back();
+}
+
+unsigned char* MerkleSet::Impl::AllocateChunk() const
+{
+    unsigned char* chunk = new unsigned char[m_chunk_size];
+    memset(chunk, 0, m_chunk_size);
+    return chunk;
+}
+
+bool MerkleSet::Impl::DeallocateChunk(unsigned char* chunk) const
+{
+    delete chunk;
+    return true;
+}
+
+bool MerkleSet::Impl::Has(uint256 hash, std::vector<uint256>* proof) const
+{
+    return true;
+}
+
+uint256 MerkleSet::Impl::RootHash() const
+{
+    uint256 result;
+    memcpy(result.begin(), m_root_hash, HASH_SIZE);
+    return result;
 }

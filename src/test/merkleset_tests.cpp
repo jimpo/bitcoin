@@ -13,7 +13,7 @@ BOOST_FIXTURE_TEST_SUITE(merkleset_tests, BasicTestingSetup)
 
 BOOST_AUTO_TEST_CASE(merkleset_sanity_test)
 {
-    MerkleSet merkle_set(/*chunk_size=*/ 1520);
+    MerkleSet merkle_set;
 
     std::vector<uint256> hashes(1000);
     for (uint i = 0; i < hashes.size(); ++i) {

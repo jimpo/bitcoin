@@ -51,8 +51,6 @@ namespace {
         Node LeftChild();
         Node RightChild();
 
-        void UpdateParent();
-
         bool IsTerminal();
     };
 
@@ -87,42 +85,49 @@ namespace {
         return a.first < b.first;
     }
 
+    template <typename Hasher>
+    class MerkleSetImpl
+    {
+        static_assert(Hasher::OUTPUT_SIZE == HASH_SIZE);
+
+    private:
+        Hasher m_hasher;
+        uint32_t m_count;
+        unsigned char m_root_hash[HASH_SIZE];
+        unsigned char* m_root_chunk;
+        size_t m_chunk_size;
+
+        unsigned char* AllocateChunk() const;
+        bool DeallocateChunk(unsigned char* chunk) const;
+
+        bool AddHashSingle(std::deque<Node>& node_stack, const hash_ref insert_hash);
+        void AddHashPair(std::deque<Node>& node_stack, const hash_ref hash1, const hash_ref hash2);
+        void AddHashTriple(std::deque<Node>& node_stack, const hash_ref hash1, const hash_ref hash2, const hash_ref hash3);
+
+        void PushNode(std::deque<Node>& node_stack, Node& node);
+        void ClearNode(std::deque<Node>& node_stack);
+        void UpdateNodeParent(Node& node);
+
+        void AdvancePosition(std::deque<Node>& node_stack, const hash_ref next_position);
+        bool RemoveHash(std::deque<Node>& node_stack, const hash_ref remove_hash);
+        void RollUpTerminalNode(std::deque<Node>& node_stack);
+
+    public:
+        MerkleSetImpl();
+        ~MerkleSetImpl();
+
+        std::vector<bool> Update(std::vector<std::pair<uint256, MerkleSet::UpdateOp>> hashes);
+        bool Has(uint256 hash, std::vector<uint256>* proof) const;
+        uint256 RootHash() const;
+        uint32_t Count() const;
+    };
+
 } // namespace
 
-class MerkleSet::Impl
-{
-private:
-    uint32_t m_count;
-    unsigned char m_root_hash[HASH_SIZE];
-    unsigned char* m_root_chunk;
-    size_t m_chunk_size;
 
-    unsigned char* AllocateChunk() const;
-    bool DeallocateChunk(unsigned char* chunk) const;
+class MerkleSet::Impl : public MerkleSetImpl<CSHA256> {};
 
-    bool AddHashSingle(std::deque<Node>& node_stack, const hash_ref insert_hash);
-    void AddHashPair(std::deque<Node>& node_stack, const hash_ref hash1, const hash_ref hash2);
-    void AddHashTriple(std::deque<Node>& node_stack, const hash_ref hash1, const hash_ref hash2, const hash_ref hash3);
-    void PushNode(std::deque<Node>& node_stack, Node& node);
-
-    void AdvancePosition(std::deque<Node>& node_stack, const hash_ref next_position);
-    bool RemoveHash(std::deque<Node>& node_stack, const hash_ref remove_hash);
-    void RollUpTerminalNode(std::deque<Node>& node_stack);
-    void ClearNode(std::deque<Node>& node_stack);
-
-public:
-    Impl(size_t chunk_size);
-    ~Impl();
-
-    std::vector<bool> Update(std::vector<std::pair<uint256, UpdateOp>> hashes);
-    bool Has(uint256 hash, std::vector<uint256>* proof) const;
-    uint256 RootHash() const;
-    uint32_t Count() const;
-};
-
-MerkleSet::MerkleSet(size_t chunk_size)
-    : m_impl(MakeUnique<MerkleSet::Impl>(chunk_size))
-{}
+MerkleSet::MerkleSet() : m_impl(MakeUnique<MerkleSet::Impl>()) {}
 
 MerkleSet::~MerkleSet() = default;
 
@@ -206,26 +211,19 @@ inline Node Node::RightChild()
     return Node(RightSlot(), 1, nullptr, child_data, ChildSize());
 }
 
-void Node::UpdateParent()
-{
-    *m_parent.m_count = LeftSlot().Count() + RightSlot().Count();
-    CSHA256().
-        Write(m_data, 2 * (sizeof(uint32_t) + HASH_SIZE)).
-        Finalize(m_parent.m_hash);
-}
-
 bool Node::IsTerminal()
 {
     return LeftSlot().Count() == 1 && RightSlot().Count() == 1;
 }
 
-MerkleSet::Impl::Impl(size_t chunk_size)
+template <typename H>
+MerkleSetImpl<H>::MerkleSetImpl()
     : m_count(0), m_root_chunk(nullptr), m_chunk_size(0)
 {
     memset(m_root_hash, 0, sizeof(m_root_hash));
 
     size_t next_chunk_size = POINTER_SIZE;
-    while (next_chunk_size <= chunk_size) {
+    while (next_chunk_size <= 1520) {
         m_chunk_size = next_chunk_size;
         next_chunk_size = (SLOT_SIZE + m_chunk_size) * 2;
     }
@@ -234,12 +232,14 @@ MerkleSet::Impl::Impl(size_t chunk_size)
     }
 }
 
-MerkleSet::Impl::~Impl()
+template <typename H>
+MerkleSetImpl<H>::~MerkleSetImpl()
 {
     // Massive memory leak
 }
 
-std::vector<bool> MerkleSet::Impl::Update(std::vector<std::pair<uint256, MerkleSet::UpdateOp>> hashes)
+template <typename H>
+std::vector<bool> MerkleSetImpl<H>::Update(std::vector<std::pair<uint256, MerkleSet::UpdateOp>> hashes)
 {
     std::deque<Node> node_stack;
     Node::Slot root_slot(&m_count, m_root_hash);
@@ -350,14 +350,15 @@ std::vector<bool> MerkleSet::Impl::Update(std::vector<std::pair<uint256, MerkleS
 
     // Unwind the node stack, computing middle node hashes.
     while (!node_stack.empty()) {
-        node_stack.back().UpdateParent();
+        UpdateNodeParent(node_stack.back());
         node_stack.pop_back();
     }
 
     return result;
 }
 
-bool MerkleSet::Impl::RemoveHash(std::deque<Node>& node_stack, const hash_ref remove_hash)
+template <typename H>
+bool MerkleSetImpl<H>::RemoveHash(std::deque<Node>& node_stack, const hash_ref remove_hash)
 {
     Node& node = node_stack.back();
     int index = node_stack.size() - 1;
@@ -421,7 +422,8 @@ bool MerkleSet::Impl::RemoveHash(std::deque<Node>& node_stack, const hash_ref re
     }
 }
 
-void MerkleSet::Impl::AdvancePosition(std::deque<Node>& node_stack, const hash_ref next_position)
+template <typename H>
+void MerkleSetImpl<H>::AdvancePosition(std::deque<Node>& node_stack, const hash_ref next_position)
 {
     // Determine bit index where position and insert_hash diverge.
     int prefix_index = 0;
@@ -435,13 +437,14 @@ void MerkleSet::Impl::AdvancePosition(std::deque<Node>& node_stack, const hash_r
     // Rewind stack back to the divergence point.
     int index = node_stack.size() - 1;
     while (prefix_index < index) {
-        node_stack.back().UpdateParent();
+        UpdateNodeParent(node_stack.back());
         node_stack.pop_back();
         --index;
     }
 }
 
-bool MerkleSet::Impl::AddHashSingle(std::deque<Node>& node_stack, const hash_ref insert_hash)
+template <typename H>
+bool MerkleSetImpl<H>::AddHashSingle(std::deque<Node>& node_stack, const hash_ref insert_hash)
 {
     Node& node = node_stack.back();
     int index = node_stack.size() - 1;
@@ -532,7 +535,8 @@ bool MerkleSet::Impl::AddHashSingle(std::deque<Node>& node_stack, const hash_ref
     }
 }
 
-void MerkleSet::Impl::RollUpTerminalNode(std::deque<Node>& node_stack)
+template <typename H>
+void MerkleSetImpl<H>::RollUpTerminalNode(std::deque<Node>& node_stack)
 {
     bool any_changes = false;
     unsigned char left_hash[HASH_SIZE], right_hash[HASH_SIZE];
@@ -570,7 +574,8 @@ void MerkleSet::Impl::RollUpTerminalNode(std::deque<Node>& node_stack)
     node.RightSlot().Set(1, right_hash);
 }
 
-void MerkleSet::Impl::AddHashPair(std::deque<Node>& node_stack, const hash_ref hash1, const hash_ref hash2)
+template <typename H>
+void MerkleSetImpl<H>::AddHashPair(std::deque<Node>& node_stack, const hash_ref hash1, const hash_ref hash2)
 {
     Node& node = node_stack.back();
     Node::Slot left_slot = node.LeftSlot();
@@ -583,7 +588,8 @@ void MerkleSet::Impl::AddHashPair(std::deque<Node>& node_stack, const hash_ref h
     right_slot.Set(1, hash2);
 }
 
-void MerkleSet::Impl::AddHashTriple(std::deque<Node>& node_stack, const hash_ref hash1, const hash_ref hash2, const hash_ref hash3)
+template <typename H>
+void MerkleSetImpl<H>::AddHashTriple(std::deque<Node>& node_stack, const hash_ref hash1, const hash_ref hash2, const hash_ref hash3)
 {
     Node& node = node_stack.back();
     int index = node_stack.size() - 1;
@@ -625,7 +631,8 @@ void MerkleSet::Impl::AddHashTriple(std::deque<Node>& node_stack, const hash_ref
     }
 }
 
-void MerkleSet::Impl::PushNode(std::deque<Node>& node_stack, Node& node)
+template <typename H>
+void MerkleSetImpl<H>::PushNode(std::deque<Node>& node_stack, Node& node)
 {
     if (node.m_size == POINTER_SIZE) {
         unsigned char** chunk_ref = reinterpret_cast<unsigned char**>(node.m_data);
@@ -638,7 +645,8 @@ void MerkleSet::Impl::PushNode(std::deque<Node>& node_stack, Node& node)
     }
 }
 
-void MerkleSet::Impl::ClearNode(std::deque<Node>& node_stack)
+template <typename H>
+void MerkleSetImpl<H>::ClearNode(std::deque<Node>& node_stack)
 {
     Node& node = node_stack.back();
     if (node.m_chunk_ref) {
@@ -651,32 +659,46 @@ void MerkleSet::Impl::ClearNode(std::deque<Node>& node_stack)
     node_stack.pop_back();
 }
 
-unsigned char* MerkleSet::Impl::AllocateChunk() const
+template <typename H>
+void MerkleSetImpl<H>::UpdateNodeParent(Node& node)
+{
+    *node.m_parent.m_count = node.LeftSlot().Count() + node.RightSlot().Count();
+    m_hasher.Reset().
+        Write(node.m_data, 2 * (sizeof(uint32_t) + HASH_SIZE)).
+        Finalize(node.m_parent.m_hash);
+}
+
+template <typename H>
+unsigned char* MerkleSetImpl<H>::AllocateChunk() const
 {
     unsigned char* chunk = new unsigned char[m_chunk_size];
     memset(chunk, 0, m_chunk_size);
     return chunk;
 }
 
-bool MerkleSet::Impl::DeallocateChunk(unsigned char* chunk) const
+template <typename H>
+bool MerkleSetImpl<H>::DeallocateChunk(unsigned char* chunk) const
 {
     delete chunk;
     return true;
 }
 
-bool MerkleSet::Impl::Has(uint256 hash, std::vector<uint256>* proof) const
+template <typename H>
+bool MerkleSetImpl<H>::Has(uint256 hash, std::vector<uint256>* proof) const
 {
     return true;
 }
 
-uint256 MerkleSet::Impl::RootHash() const
+template <typename H>
+uint256 MerkleSetImpl<H>::RootHash() const
 {
     uint256 result;
     memcpy(result.begin(), m_root_hash, HASH_SIZE);
     return result;
 }
 
-uint32_t MerkleSet::Impl::Count() const
+template <typename H>
+uint32_t MerkleSetImpl<H>::Count() const
 {
     return m_count;
 }

@@ -19,7 +19,7 @@ public:
         REMOVE
     };
 
-    MerkleSet(size_t chunk_size);
+    MerkleSet();
     ~MerkleSet();
 
     std::vector<bool> Update(std::vector<std::pair<uint256, UpdateOp>> hashes);
@@ -31,6 +31,7 @@ public:
 
 private:
     class Impl;
+
     std::unique_ptr<Impl> m_impl;
 };
 

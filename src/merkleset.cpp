@@ -85,6 +85,54 @@ namespace {
         return a.first < b.first;
     }
 
+    struct ChunkRef
+    {
+        static constexpr size_t SIZE = sizeof(uint16_t) + sizeof(uint16_t);
+
+        uint16_t m_file_no;
+        uint16_t m_chunk_no;
+
+        bool Encode(unsigned char* dest) const;
+        bool Decode(unsigned char* src);
+    };
+
+    struct ChunkFile
+    {
+        uint m_file_no;
+        std::vector<bool> m_chunks_allocated;
+        std::vector<bool> m_chunks_open;
+        boost::iostreams::mapped_file m_mapped_file;
+
+        ChunkFile(uint file_no, uint max_chunks);
+        uint AllocatedCount() const;
+        uint OpenCount() const;
+        bool IsFull() const;
+
+        static bool ComparePriority(const ChunkFile& a, const ChunkFile& b);
+    };
+
+    class ChunkAccess
+    {
+    private:
+        uint m_chunks_per_file;
+        size_t m_file_size;
+        size_t m_chunk_size;
+        std::list<ChunkRef> m_open_chunks;
+        std::vector<ChunkFile> m_files;
+        std::set<uint> m_available_files;
+
+        ChunkFile& SelectFile();
+
+    public:
+        ChunkAccess(size_t file_size, size_t chunk_size);
+        ~ChunkAccess();
+
+        unsigned char* Allocate(ChunkRef& chunk);
+        void Deallocate(ChunkRef& chunk);
+        unsigned char* Open(ChunkRef& chunk);
+        void Close(ChunkRef& chunk);
+    };
+
     template <typename Hasher>
     class MerkleSetImpl
     {
@@ -92,6 +140,8 @@ namespace {
 
     private:
         Hasher m_hasher;
+        ChunkAccess m_chunk_access;
+
         uint32_t m_count;
         unsigned char m_root_hash[HASH_SIZE];
         unsigned char* m_root_chunk;
@@ -216,9 +266,130 @@ bool Node::IsTerminal()
     return LeftSlot().Count() == 1 && RightSlot().Count() == 1;
 }
 
+ChunkFile::ChunkFile(uint file_no, uint max_chunks) :
+    m_file_no(file_no),
+    m_chunks_allocated(max_chunks, false),
+    m_chunks_open(max_chunks, false)
+    m_region(nullptr)
+{}
+
+uint ChunkFile::AllocatedCount() const
+{
+    return m_chunks_allocated.count(true);
+}
+
+uint ChunkFile::OpenCount() const
+{
+    return m_chunks_open.count(true);
+}
+
+static bool ChunkFile::ComparePriority(const ChunkFile& a, const ChunkFile& b)
+{
+    if (a.OpenCount() < b.OpenCount()) {
+        return true;
+    }
+    if (a.AllocatedCount() < b.AllocatedCount()) {
+        return true;
+    }
+    return false;
+}
+
+bool ChunkFile::IsFull() const
+{
+    for (bool allocated : m_allocated) {
+        if (!allocated) {
+            return true;
+        }
+    }
+    return false;
+}
+
+ChunkAccess::ChunkAccess(size_t file_size, size_t chunk_size) :
+    m_chunks_per_file(file_size / chunk_size),
+    m_file_size(m_chunks_per_file * chunk_size),
+    m_chunk_size(chunk_size)
+{}
+
+uint ChunkAccess::SelectFile()
+{
+    for (const ChunkRef& open_chunk : m_open_chunks) {
+        ChunkFile& file = m_files[open_chunk.m_file_no];
+        if (!file.IsFull()) {
+            return file.m_file_no;
+        }
+    }
+
+    if (!m_available_files.empty()) {
+        return *m_available_files.rbegin();
+    }
+
+    return m_files.size();
+}
+
+uint ChunkFile::AllocateChunk()
+{
+    uint chunk_no = 0;
+    while (chunk_no < file.m_chunks_allocated.size() &&
+           file.m_chunks_allocated[chunk_no]) {
+        ++chunk_no;
+    }
+
+    if (chunk_no < file.m_chunks_allocated.size()) {
+        file.m_chunks_allocated[chunk_no] = true;
+    }
+
+    return chunk_no;
+}
+
+unsigned char* ChunkFile::Open(uint chunk_no)
+{
+    assert(chunk_no < m_chunks_open.size());
+    assert(m_chunks_available[chunk_no]);
+    assert(!m_chunks_available[chunk_no]);
+
+    if (!m_mapped_file.is_open()) {
+
+    }
+
+    return m_mapped_file.data() + m_chunk_size * chunk_no;
+}
+
+ChunkRef ChunkAccess::Allocate()
+{
+    uint file_no = SelectFile();
+    assert(file_no <= m_files.size());
+
+    if (file_no < m_files.size()) {
+        m_available_files.erase(file_no);
+    } else {
+        m_files.emplace_back(file_no, m_chunks_per_file);
+    }
+
+    ChunkFile& file = m_files[file_no];
+    int chunk_no = file.AllocateChunk();
+    assert(chunk_no <= m_chunks_per_file);
+
+    if (!file.IsFull()) {
+        m_available_files.insert(file);
+    }
+
+    // TODO: Flush to manifest
+
+    return ChunkRef(file_no, chunk_no);
+}
+
+void Deallocate(ChunkRef& chunk)
+{
+}
+
+unsigned char* Open(ChunkRef& chunk)
+{
+    return m_files[chunk].Open(chunk.m_chunk_no);
+}
+
 template <typename H>
-MerkleSetImpl<H>::MerkleSetImpl()
-    : m_count(0), m_root_chunk(nullptr), m_chunk_size(0)
+MerkleSetImpl<H>::MerkleSetImpl() :
+    m_count(0), m_root_chunk(nullptr), m_chunk_size(0)
 {
     memset(m_root_hash, 0, sizeof(m_root_hash));
 

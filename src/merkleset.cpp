@@ -16,42 +16,44 @@ namespace {
 
     constexpr size_t HASH_SIZE = 32;
 
+    constexpr size_t SLOT_SIZE = sizeof(uint32_t) + HASH_SIZE;
+
     typedef unsigned char* hash_ref;
 
     struct Node {
-        hash_ref m_parent_hash;
+        // Second hardest problem in computer science strikes again.
+        struct Slot {
+            uint32_t* m_count;
+            hash_ref m_hash;
+
+            Slot();
+            Slot(uint32_t* count, hash_ref hash);
+
+            uint32_t Count();
+            void Set(uint32_t count, hash_ref hash);
+            void Clear();
+        };
+
+        Slot m_parent;
+        bool m_bit;
         unsigned char** m_chunk_ref;
         unsigned char* m_data;
         size_t m_size;
 
         Node();
-        Node(hash_ref parent_hash, unsigned char** chunk_ref, unsigned char* data, size_t size);
+        Node(Slot parent, bool bit, unsigned char** chunk_ref, unsigned char* data, size_t size);
 
-        size_t ChildSize() const { return (m_size - HASH_SIZE * 2) / 2; }
-        hash_ref LeftHash() { return m_data; }
-        hash_ref RightHash() { return m_data + HASH_SIZE; }
+        size_t ChildSize() const;
 
-        Node LeftChild()
-        {
-            unsigned char* child_data = m_data + HASH_SIZE * 2;
-            return Node(LeftHash(), nullptr, child_data, ChildSize());
-        }
+        Slot LeftSlot();
+        Slot RightSlot();
 
-        Node RightChild()
-        {
-            unsigned char* child_data = m_data + HASH_SIZE * 2 + ChildSize();
-            return Node(RightHash(), nullptr, child_data, ChildSize());
-        }
+        Node LeftChild();
+        Node RightChild();
 
-        void UpdateParentHash();
+        void UpdateParent();
 
         bool IsTerminal();
-    };
-
-    enum HashType {
-        EMPTY,
-        TERMINAL,
-        MIDDLE
     };
 
     void SetHash(hash_ref dst, const hash_ref src)
@@ -74,32 +76,15 @@ namespace {
         return HashCompare(hash_a, hash_b) == 0;
     }
 
-    HashType GetType(const hash_ref hash)
+    std::string HashToHex(const hash_ref hash)
     {
-        static unsigned char empty_hash[32] = {0};
-
-        if (HashBit(hash, 0)) {
-            return HashType::MIDDLE;
-        } else if (HashEqual(hash, empty_hash)) {
-            return HashType::EMPTY;
-        } else {
-            return HashType::TERMINAL;
-        }
+        return HexStr(hash, hash + 4);
     }
 
-    void SetType(hash_ref hash, HashType type)
+    bool UpdateCompare(const std::pair<uint256, MerkleSet::UpdateOp>& a,
+                       const std::pair<uint256, MerkleSet::UpdateOp>& b)
     {
-        switch (type) {
-        case HashType::EMPTY:
-            memset(hash, 0, HASH_SIZE);
-            break;
-        case HashType::TERMINAL:
-            hash[0] &= 0x7F;
-            break;
-        case HashType::MIDDLE:
-            hash[0] |= 0x80;
-            break;
-        }
+        return a.first < b.first;
     }
 
 } // namespace
@@ -107,6 +92,7 @@ namespace {
 class MerkleSet::Impl
 {
 private:
+    uint32_t m_count;
     unsigned char m_root_hash[HASH_SIZE];
     unsigned char* m_root_chunk;
     size_t m_chunk_size;
@@ -119,9 +105,9 @@ private:
     void AddHashTriple(std::deque<Node>& node_stack, const hash_ref hash1, const hash_ref hash2, const hash_ref hash3);
     void PushNode(std::deque<Node>& node_stack, Node& node);
 
-    void AdvancePosition(std::deque<Node>& node_stack, hash_ref& position, const hash_ref next_position);
+    void AdvancePosition(std::deque<Node>& node_stack, const hash_ref next_position);
     bool RemoveHash(std::deque<Node>& node_stack, const hash_ref remove_hash);
-    void RollUpTerminalNode(std::deque<Node>& node_stack, const hash_ref position);
+    void RollUpTerminalNode(std::deque<Node>& node_stack);
     void ClearNode(std::deque<Node>& node_stack);
 
 public:
@@ -131,6 +117,7 @@ public:
     std::vector<bool> Update(std::vector<std::pair<uint256, UpdateOp>> hashes);
     bool Has(uint256 hash, std::vector<uint256>* proof) const;
     uint256 RootHash() const;
+    uint32_t Count() const;
 };
 
 MerkleSet::MerkleSet(size_t chunk_size)
@@ -154,29 +141,97 @@ uint256 MerkleSet::RootHash() const
     return m_impl->RootHash();
 }
 
-Node::Node() : Node(nullptr, nullptr, nullptr, 0) {}
+uint32_t MerkleSet::Count() const
+{
+    return m_impl->Count();
+}
 
-Node::Node(hash_ref parent_hash, unsigned char** chunk_ref, unsigned char* data, size_t size)
-    : m_parent_hash(parent_hash), m_chunk_ref(chunk_ref), m_data(data), m_size(size)
+Node::Slot::Slot() : Slot(nullptr, nullptr) {}
+
+Node::Slot::Slot(uint32_t* count, hash_ref hash)
+    : m_count(count), m_hash(hash)
 {}
 
-void Node::UpdateParentHash()
+inline uint32_t Node::Slot::Count()
 {
-    CSHA256().Write(m_data, HASH_SIZE * 2).Finalize(m_parent_hash);
-    SetType(m_parent_hash, HashType::MIDDLE);
+    return *m_count;
+}
+
+inline void Node::Slot::Set(uint32_t count, hash_ref hash)
+{
+    *m_count = count;
+    SetHash(m_hash, hash);
+}
+
+inline void Node::Slot::Clear()
+{
+    *m_count = 0;
+    memset(m_hash, 0, HASH_SIZE);
+}
+
+Node::Node() : Node(Slot(), 0, nullptr, nullptr, 0) {}
+
+Node::Node(Slot parent, bool bit, unsigned char** chunk_ref, unsigned char* data, size_t size)
+    : m_parent(parent), m_bit(bit), m_chunk_ref(chunk_ref), m_data(data), m_size(size)
+{}
+
+inline size_t Node::ChildSize() const
+{
+    return (m_size - 2 * SLOT_SIZE) / 2;
+}
+
+inline Node::Slot Node::LeftSlot()
+{
+    uint32_t* count = reinterpret_cast<uint32_t*>(m_data);
+    hash_ref hash = m_data + sizeof(uint32_t);
+    return Slot(count, hash);
+}
+
+inline Node::Slot Node::RightSlot()
+{
+    uint32_t* count = reinterpret_cast<uint32_t*>(m_data + SLOT_SIZE);
+    hash_ref hash = m_data + SLOT_SIZE + sizeof(uint32_t);
+    return Slot(count, hash);
+}
+
+inline Node Node::LeftChild()
+{
+    unsigned char* child_data = m_data + 2 * SLOT_SIZE;
+    return Node(LeftSlot(), 0, nullptr, child_data, ChildSize());
+}
+
+inline Node Node::RightChild()
+{
+    unsigned char* child_data = m_data + 2 * SLOT_SIZE + ChildSize();
+    return Node(RightSlot(), 1, nullptr, child_data, ChildSize());
+}
+
+void Node::UpdateParent()
+{
+    *m_parent.m_count = LeftSlot().Count() + RightSlot().Count();
+    CSHA256().
+        Write(m_data, 2 * (sizeof(uint32_t) + HASH_SIZE)).
+        Finalize(m_parent.m_hash);
 }
 
 bool Node::IsTerminal()
 {
-    return
-        GetType(LeftHash()) == HashType::TERMINAL &&
-        GetType(RightHash()) == HashType::TERMINAL;
+    return LeftSlot().Count() == 1 && RightSlot().Count() == 1;
 }
 
 MerkleSet::Impl::Impl(size_t chunk_size)
-    : m_root_chunk(nullptr), m_chunk_size(chunk_size)
+    : m_count(0), m_root_chunk(nullptr), m_chunk_size(0)
 {
     memset(m_root_hash, 0, sizeof(m_root_hash));
+
+    size_t next_chunk_size = POINTER_SIZE;
+    while (next_chunk_size <= chunk_size) {
+        m_chunk_size = next_chunk_size;
+        next_chunk_size = (SLOT_SIZE + m_chunk_size) * 2;
+    }
+    if (m_chunk_size <= POINTER_SIZE) {
+        throw std::invalid_argument("chunk_size");
+    }
 }
 
 MerkleSet::Impl::~Impl()
@@ -186,20 +241,15 @@ MerkleSet::Impl::~Impl()
 
 std::vector<bool> MerkleSet::Impl::Update(std::vector<std::pair<uint256, MerkleSet::UpdateOp>> hashes)
 {
-    static unsigned char start_position[32] = {0};
-
     std::deque<Node> node_stack;
-    hash_ref position = start_position;
-
-    for (auto& update : hashes) {
-        hash_ref hash = update.first.begin();
-        SetType(hash, HashType::TERMINAL);
-    }
-    std::sort(hashes.begin(), hashes.end());
+    Node::Slot root_slot(&m_count, m_root_hash);
 
     // Collect update results for each hash into a vector.
     std::vector<bool> result;
     result.reserve(hashes.size());
+
+    // Stable sort will reorder hashes, but not update operations grouped by hash.
+    std::stable_sort(hashes.begin(), hashes.end(), UpdateCompare);
 
     for (auto& update : hashes) {
         // Cannot add empty hashes, as they would be confused with terminals.
@@ -211,35 +261,31 @@ std::vector<bool> MerkleSet::Impl::Update(std::vector<std::pair<uint256, MerkleS
         hash_ref hash = update.first.begin();
         bool modified;
 
-        std::cout << "Adding: " << HexStr(hash, hash + 32) << std::endl;
-        std::cout << "Position: " << HexStr(position, position + 32) << std::endl;
-
         switch (update.second) {
         case MerkleSet::UpdateOp::INSERT:
             if (!node_stack.empty()) {
-                AdvancePosition(node_stack, position, hash);
-                position = hash;
+                AdvancePosition(node_stack, hash);
                 modified = AddHashSingle(node_stack, hash);
 
             } else {
-                switch (GetType(m_root_hash)) {
-                case HashType::EMPTY:
-                    SetHash(m_root_hash, hash);
+                switch (root_slot.Count()) {
+                case 0:
+                    root_slot.Set(1, hash);
                     modified = true;
                     break;
 
-                case HashType::TERMINAL:
-                    if (HashEqual(m_root_hash, hash)) {
+                case 1:
+                    if (HashEqual(root_slot.m_hash, hash)) {
                         modified = false;
                         break;
                     }
 
                     assert(m_root_chunk == nullptr);
                     m_root_chunk = AllocateChunk();
-                    node_stack.emplace_back(m_root_hash, &m_root_chunk, m_root_chunk, m_chunk_size);
+                    node_stack.emplace_back(root_slot, 0, &m_root_chunk, m_root_chunk, m_chunk_size);
 
                     {
-                        hash_ref hash1 = hash, hash2 = m_root_hash;
+                        hash_ref hash1 = hash, hash2 = root_slot.m_hash;
                         if (HashCompare(hash1, hash2) > 0) {
                             std::swap(hash1, hash2);
                         }
@@ -250,17 +296,13 @@ std::vector<bool> MerkleSet::Impl::Update(std::vector<std::pair<uint256, MerkleS
                     modified = true;
                     break;
 
-                case HashType::MIDDLE:
+                default:
                     assert(m_root_chunk != nullptr);
-                    node_stack.emplace_back(m_root_hash, &m_root_chunk, m_root_chunk, m_chunk_size);
+                    node_stack.emplace_back(root_slot, 0, &m_root_chunk, m_root_chunk, m_chunk_size);
 
-                    AdvancePosition(node_stack, position, hash);
-                    position = hash;
+                    AdvancePosition(node_stack, hash);
                     modified = AddHashSingle(node_stack, hash);
                     break;
-
-                default:
-                    throw std::logic_error("Unhandled HashType");
 
                 }
             }
@@ -268,34 +310,31 @@ std::vector<bool> MerkleSet::Impl::Update(std::vector<std::pair<uint256, MerkleS
 
         case MerkleSet::UpdateOp::REMOVE:
             if (!node_stack.empty()) {
-                AdvancePosition(node_stack, position, hash);
-                modified = AddHashSingle(node_stack, hash);
+                AdvancePosition(node_stack, hash);
+                modified = RemoveHash(node_stack, hash);
 
             } else {
-                switch (GetType(m_root_hash)) {
-                case HashType::EMPTY:
+                switch (root_slot.Count()) {
+                case 0:
                     modified = false;
                     break;
 
-                case HashType::TERMINAL:
-                    if (HashEqual(m_root_hash, hash)) {
+                case 1:
+                    if (HashEqual(root_slot.m_hash, hash)) {
                         modified = true;
-                        SetType(m_root_hash, HashType::EMPTY);
+                        root_slot.Clear();
                     } else {
                         modified = false;
                     }
                     break;
 
-                case HashType::MIDDLE:
+                default:
                     assert(m_root_chunk != nullptr);
-                    node_stack.emplace_back(m_root_hash, &m_root_chunk, m_root_chunk, m_chunk_size);
+                    node_stack.emplace_back(root_slot, 0, &m_root_chunk, m_root_chunk, m_chunk_size);
 
-                    AdvancePosition(node_stack, position, hash);
+                    AdvancePosition(node_stack, hash);
                     modified = RemoveHash(node_stack, hash);
                     break;
-
-                default:
-                    throw std::logic_error("Unhandled HashType");
 
                 }
             }
@@ -306,13 +345,12 @@ std::vector<bool> MerkleSet::Impl::Update(std::vector<std::pair<uint256, MerkleS
 
         }
 
-        std::cout << "Modified: " << modified << std::endl;
         result.push_back(modified);
     }
 
     // Unwind the node stack, computing middle node hashes.
     while (!node_stack.empty()) {
-        node_stack.back().UpdateParentHash();
+        node_stack.back().UpdateParent();
         node_stack.pop_back();
     }
 
@@ -322,48 +360,53 @@ std::vector<bool> MerkleSet::Impl::Update(std::vector<std::pair<uint256, MerkleS
 bool MerkleSet::Impl::RemoveHash(std::deque<Node>& node_stack, const hash_ref remove_hash)
 {
     Node& node = node_stack.back();
-    int index = node_stack.size();
+    int index = node_stack.size() - 1;
 
-    hash_ref node_hash = node.LeftHash(), other_node_hash = node.RightHash();
-    Node child_node = node.LeftChild(), other_child_node = node.RightChild();
-    if (HashBit(remove_hash, index)) {
-        std::swap(node_hash, other_node_hash);
-        std::swap(child_node, other_child_node);
+    Node::Slot slot, other_slot;
+    Node child_node, other_child_node;
+    if (!HashBit(remove_hash, index)) {
+        slot = node.LeftSlot(), other_slot = node.RightSlot();
+        child_node = node.LeftChild(), other_child_node = node.RightChild();
+    } else {
+        slot = node.RightSlot(), other_slot = node.LeftSlot();
+        child_node = node.RightChild(), other_child_node = node.LeftChild();
     }
 
-    switch (GetType(node_hash)) {
-    case HashType::EMPTY:
+    switch (slot.Count()) {
+    case 0:
         return false;
 
-    case HashType::TERMINAL:
-        switch (GetType(other_node_hash)) {
-        case HashType::EMPTY:
+    case 1:
+        switch (other_slot.Count()) {
+        case 0:
             throw std::logic_error("INTERNAL ERROR: node has one empty child and one terminal");
 
-        case HashType::TERMINAL:
-            if (HashEqual(remove_hash, node_hash)) {
-                SetHash(node.m_parent_hash, other_node_hash);
-            } else if (HashEqual(remove_hash, other_node_hash)) {
-                SetHash(node.m_parent_hash, node_hash);
+        case 1:
+            if (HashEqual(remove_hash, slot.m_hash)) {
+                node.m_parent.Set(1, other_slot.m_hash);
+            } else if (HashEqual(remove_hash, other_slot.m_hash)) {
+                node.m_parent.Set(1, slot.m_hash);
             } else {
                 return false;
             }
 
             ClearNode(node_stack);
-            RollUpTerminalNode(node_stack, remove_hash);
+            if (!node_stack.empty() && node_stack.back().IsTerminal()) {
+                RollUpTerminalNode(node_stack);
+            }
             return true;
 
-        case HashType::MIDDLE:
-            if (!HashEqual(remove_hash, node_hash)) {
+        default:
+            if (!HashEqual(remove_hash, slot.m_hash)) {
                 return false;
             }
 
-            SetType(node_hash, HashType::EMPTY);
+            slot.Clear();
 
             // Push for the sake of doing the dereference thing.
             PushNode(node_stack, other_child_node);
             if (node_stack.back().IsTerminal()) {
-                RollUpTerminalNode(node_stack, remove_hash);
+                RollUpTerminalNode(node_stack);
             } else {
                 node_stack.pop_back();
             }
@@ -371,92 +414,91 @@ bool MerkleSet::Impl::RemoveHash(std::deque<Node>& node_stack, const hash_ref re
 
         }
 
-    case HashType::MIDDLE:
+    default:
         PushNode(node_stack, child_node);
         return RemoveHash(node_stack, remove_hash); // tail-recursion
-
-    default:
-        throw std::logic_error("Unhandled HashType");
 
     }
 }
 
-void MerkleSet::Impl::AdvancePosition(std::deque<Node>& node_stack, hash_ref& position, const hash_ref next_position)
+void MerkleSet::Impl::AdvancePosition(std::deque<Node>& node_stack, const hash_ref next_position)
 {
-    int index = node_stack.size();
-
     // Determine bit index where position and insert_hash diverge.
-    int prefix_index = 1;
-    while (prefix_index < index &&
-           HashBit(position, prefix_index) == HashBit(next_position, prefix_index)) {
+    int prefix_index = 0;
+    auto stack_it = ++node_stack.begin();
+    while (stack_it != node_stack.end() &&
+           stack_it->m_bit == HashBit(next_position, prefix_index)) {
         ++prefix_index;
+        ++stack_it;
     }
 
+    // Rewind stack back to the divergence point.
+    int index = node_stack.size() - 1;
     while (prefix_index < index) {
-        node_stack.back().UpdateParentHash();
+        node_stack.back().UpdateParent();
         node_stack.pop_back();
         --index;
     }
-
-    position = next_position;
 }
 
 bool MerkleSet::Impl::AddHashSingle(std::deque<Node>& node_stack, const hash_ref insert_hash)
 {
     Node& node = node_stack.back();
-    int index = node_stack.size();
+    int index = node_stack.size() - 1;
 
-    std::cout << "Single: " << index << std::endl;
-
-    hash_ref node_hash, other_node_hash;
+    Node::Slot slot, other_slot;
     Node child_node;
     if (!HashBit(insert_hash, index)) {
-        node_hash = node.LeftHash();
-        other_node_hash = node.RightHash();
+        slot = node.LeftSlot();
+        other_slot = node.RightSlot();
         child_node = node.LeftChild();
     } else {
-        node_hash = node.RightHash();
-        other_node_hash = node.LeftHash();
+        slot = node.RightSlot();
+        other_slot = node.LeftSlot();
         child_node = node.RightChild();
     }
 
-    switch (GetType(node_hash)) {
-    case HashType::EMPTY:
-        switch (GetType(other_node_hash)) {
-        case HashType::EMPTY:
+    switch (slot.Count()) {
+    case 0:
+        switch (other_slot.Count()) {
+        case 0:
             throw std::logic_error("INTERNAL ERROR: node has two empy children");
 
-        case HashType::TERMINAL:
+        case 1:
             throw std::logic_error("INTERNAL ERROR: node has one empty child and one terminal");
 
-        case HashType::MIDDLE:
-            SetHash(node_hash, insert_hash);
+        default:
+            slot.Set(1, insert_hash);
             return true;
 
         }
 
-    case HashType::TERMINAL:
-        if (HashEqual(insert_hash, node_hash)) {
+    case 1:
+        if (HashEqual(insert_hash, slot.m_hash)) {
             return false;
         }
 
-        switch (GetType(other_node_hash)) {
-        case HashType::EMPTY:
+        switch (other_slot.Count()) {
+        case 0:
             throw std::logic_error("INTERNAL ERROR: node has one empty child and one terminal");
 
-        case HashType::TERMINAL:
-            if (HashEqual(insert_hash, other_node_hash)) {
+        case 1:
+            if (HashEqual(insert_hash, other_slot.m_hash)) {
                 return false;
             }
 
-            // Make copies of left_hash and right_hash, then set the original locations to empty.
-            unsigned char left_hash_copy[HASH_SIZE], right_hash_copy[HASH_SIZE];
-            SetHash(left_hash_copy, node.LeftHash());
-            SetHash(right_hash_copy, node.RightHash());
-            SetType(node.LeftHash(), HashType::EMPTY);
-            SetType(node.RightHash(), HashType::EMPTY);
-
             {
+                Node::Slot left_slot = node.LeftSlot();
+                Node::Slot right_slot = node.RightSlot();
+
+                // Make copies of left_hash and right_hash, then set the original locations to empty.
+                unsigned char left_hash_copy[HASH_SIZE], right_hash_copy[HASH_SIZE];
+                SetHash(left_hash_copy, left_slot.m_hash);
+                SetHash(right_hash_copy, right_slot.m_hash);
+
+                left_slot.Clear();
+                right_slot.Clear();
+
                 hash_ref hash1 = left_hash_copy, hash2 = insert_hash, hash3 = right_hash_copy;
                 if (HashCompare(hash1, hash2) > 0) {
                     std::swap(hash1, hash2);
@@ -469,10 +511,10 @@ bool MerkleSet::Impl::AddHashSingle(std::deque<Node>& node_stack, const hash_ref
             }
             return true;
 
-        case HashType::MIDDLE:
+        default:
             PushNode(node_stack, child_node);
             {
-                hash_ref hash1 = node_hash, hash2 = insert_hash;
+                hash_ref hash1 = slot.m_hash, hash2 = insert_hash;
                 if (HashCompare(hash1, hash2) > 0) {
                     std::swap(hash1, hash2);
                 }
@@ -483,39 +525,39 @@ bool MerkleSet::Impl::AddHashSingle(std::deque<Node>& node_stack, const hash_ref
 
         }
 
-    case HashType::MIDDLE:
+    default:
         PushNode(node_stack, child_node);
         return AddHashSingle(node_stack, insert_hash); // tail recursion
-
-    default:
-        throw std::logic_error("Unhandled HashType");
 
     }
 }
 
-void MerkleSet::Impl::RollUpTerminalNode(std::deque<Node>& node_stack, const hash_ref position)
+void MerkleSet::Impl::RollUpTerminalNode(std::deque<Node>& node_stack)
 {
-    unsigned char left_hash[HASH_SIZE], right_hash[HASH_SIZE];
-    SetHash(left_hash, node_stack.back().LeftHash());
-    SetHash(right_hash, node_stack.back().RightHash());
-
     bool any_changes = false;
+    unsigned char left_hash[HASH_SIZE], right_hash[HASH_SIZE];
+
     while (node_stack.size() >= 2) {
-        int index = node_stack.size() - 1;
+        Node& node = node_stack.back();
         Node& parent_node = *(++node_stack.rbegin());
 
-        hash_ref parent_other_hash;
-        if (HashBit(position, index)) {
-            parent_other_hash = parent_node.LeftHash();
+        Node::Slot parent_other_slot;
+        if (node.m_bit) {
+            parent_other_slot = parent_node.LeftSlot();
         } else {
-            parent_other_hash = parent_node.RightHash();
+            parent_other_slot = parent_node.RightSlot();
         }
 
-        if (GetType(parent_other_hash) != HashType::EMPTY) {
+        if (parent_other_slot.Count() != 0) {
             break;
         }
 
-        any_changes = true;
+        if (!any_changes) {
+            SetHash(left_hash, node.LeftSlot().m_hash);
+            SetHash(right_hash, node.RightSlot().m_hash);
+            any_changes = true;
+        }
+
         ClearNode(node_stack);
     }
 
@@ -524,39 +566,32 @@ void MerkleSet::Impl::RollUpTerminalNode(std::deque<Node>& node_stack, const has
     }
 
     Node& node = node_stack.back();
-    SetHash(node.LeftHash(), left_hash);
-    SetHash(node.RightHash(), right_hash);
+    node.LeftSlot().Set(1, left_hash);
+    node.RightSlot().Set(1, right_hash);
 }
 
 void MerkleSet::Impl::AddHashPair(std::deque<Node>& node_stack, const hash_ref hash1, const hash_ref hash2)
 {
     Node& node = node_stack.back();
-    hash_ref left_hash = node.LeftHash();
-    hash_ref right_hash = node.RightHash();
+    Node::Slot left_slot = node.LeftSlot();
+    Node::Slot right_slot = node.RightSlot();
 
-    std::cout << "Pair: " << node_stack.size() << std::endl;
+    assert(left_slot.Count() == 0);
+    assert(right_slot.Count() == 0);
 
-    assert(GetType(left_hash) == HashType::EMPTY);
-    assert(GetType(right_hash) == HashType::EMPTY);
-    assert(GetType(hash1) == HashType::TERMINAL);
-    assert(GetType(hash2) == HashType::TERMINAL);
-
-    SetHash(left_hash, hash1);
-    SetHash(right_hash, hash2);
+    left_slot.Set(1, hash1);
+    right_slot.Set(1, hash2);
 }
 
 void MerkleSet::Impl::AddHashTriple(std::deque<Node>& node_stack, const hash_ref hash1, const hash_ref hash2, const hash_ref hash3)
 {
     Node& node = node_stack.back();
-    int index = node_stack.size();
+    int index = node_stack.size() - 1;
 
-    std::cout << "Triple: " << node_stack.size() << std::endl;
-
-    assert(GetType(node.LeftHash()) == HashType::EMPTY);
-    assert(GetType(node.RightHash()) == HashType::EMPTY);
-    assert(GetType(hash1) == HashType::TERMINAL);
-    assert(GetType(hash2) == HashType::TERMINAL);
-    assert(GetType(hash3) == HashType::TERMINAL);
+    Node::Slot left_slot = node.LeftSlot();
+    Node::Slot right_slot = node.RightSlot();
+    assert(left_slot.Count() == 0);
+    assert(right_slot.Count() == 0);
 
     uint8_t bit1 = HashBit(hash1, index);
     uint8_t bit2 = HashBit(hash2, index);
@@ -576,13 +611,13 @@ void MerkleSet::Impl::AddHashTriple(std::deque<Node>& node_stack, const hash_ref
         Node child_node = node.LeftChild();
         PushNode(node_stack, child_node);
         AddHashPair(node_stack, hash1, hash2);
-        SetHash(node.RightHash(), hash3);
+        right_slot.Set(1, hash3);
 
     } else if (bit1 == 0 && bit2 == 1 && bit3 == 1) {
         Node child_node = node.RightChild();
         PushNode(node_stack, child_node);
         AddHashPair(node_stack, hash2, hash3);
-        SetHash(node.LeftHash(), hash1);
+        left_slot.Set(1, hash1);
 
     } else {
         throw std::logic_error("INTERNAL ERROR: insert triple called with unsorted hashes");
@@ -597,7 +632,7 @@ void MerkleSet::Impl::PushNode(std::deque<Node>& node_stack, Node& node)
         if (*chunk_ref == nullptr) {
             *chunk_ref = AllocateChunk();
         }
-        node_stack.emplace_back(node.m_parent_hash, chunk_ref, *chunk_ref, m_chunk_size);
+        node_stack.emplace_back(node.m_parent, node.m_bit, chunk_ref, *chunk_ref, m_chunk_size);
     } else {
         node_stack.push_back(node);
     }
@@ -610,8 +645,8 @@ void MerkleSet::Impl::ClearNode(std::deque<Node>& node_stack)
         DeallocateChunk(*node.m_chunk_ref);
         *node.m_chunk_ref = nullptr;
     } else {
-        SetType(node.LeftHash(), HashType::EMPTY);
-        SetType(node.RightHash(), HashType::EMPTY);
+        node.LeftSlot().Clear();
+        node.RightSlot().Clear();
     }
     node_stack.pop_back();
 }
@@ -639,4 +674,9 @@ uint256 MerkleSet::Impl::RootHash() const
     uint256 result;
     memcpy(result.begin(), m_root_hash, HASH_SIZE);
     return result;
+}
+
+uint32_t MerkleSet::Impl::Count() const
+{
+    return m_count;
 }

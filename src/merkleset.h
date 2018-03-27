@@ -27,6 +27,7 @@ public:
     bool Has(uint256 hash, std::vector<uint256>* proof) const;
 
     uint256 RootHash() const;
+    uint32_t Count() const;
 
 private:
     class Impl;

@@ -2,6 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <crypto/sha256.h>
 #include <merkleset.h>
 #include <uint256.h>
 #include <test/test_bitcoin.h>
@@ -12,22 +13,36 @@ BOOST_FIXTURE_TEST_SUITE(merkleset_tests, BasicTestingSetup)
 
 BOOST_AUTO_TEST_CASE(merkleset_sanity_test)
 {
-    MerkleSet merkle_set(/*chunk_size=*/ 1024);
+    MerkleSet merkle_set(/*chunk_size=*/ 1520);
 
-    std::vector<std::pair<uint256, MerkleSet::UpdateOp>> hashes;
-    hashes.reserve(256);
-    for (int i = 0; i < 5; i++) {
-        std::vector<unsigned char> hash_data(32);
-        hash_data[0] = static_cast<unsigned char>(i);
+    std::vector<uint256> hashes(1000);
+    for (uint i = 0; i < hashes.size(); ++i) {
+        CSHA256().
+            Write(reinterpret_cast<unsigned char*>(&i), sizeof(i)).
+            Finalize(hashes[i].begin());
+    }
 
-        hashes.emplace_back(uint256(hash_data), MerkleSet::UpdateOp::INSERT);
+    std::vector<std::pair<uint256, MerkleSet::UpdateOp>> inserts;
+    inserts.reserve(hashes.size());
+    for (const uint256& hash : hashes) {
+        inserts.emplace_back(hash, MerkleSet::UpdateOp::INSERT);
     }
 
     BOOST_TEST_MESSAGE("Prior root hash: " << merkle_set.RootHash().GetHex());
-    merkle_set.Update(std::move(hashes));
+    merkle_set.Update(std::move(inserts));
     BOOST_TEST_MESSAGE("Post root hash: " << merkle_set.RootHash().GetHex());
 
-    BOOST_FAIL("Just because");
+    std::vector<std::pair<uint256, MerkleSet::UpdateOp>> removes;
+    removes.reserve(hashes.size());
+    for (const uint256& hash : hashes) {
+        removes.emplace_back(hash, MerkleSet::UpdateOp::REMOVE);
+    }
+
+    BOOST_TEST_MESSAGE("Prior root count: " << merkle_set.Count());
+    BOOST_TEST_MESSAGE("Prior root hash: " << merkle_set.RootHash().GetHex());
+    merkle_set.Update(std::move(removes));
+    BOOST_TEST_MESSAGE("Post root hash: " << merkle_set.RootHash().GetHex());
+    BOOST_TEST_MESSAGE("Post root count: " << merkle_set.Count());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

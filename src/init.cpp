@@ -23,6 +23,7 @@
 #include <key.h>
 #include <validation.h>
 #include <miner.h>
+#include <mmr.h>
 #include <netbase.h>
 #include <net.h>
 #include <net_processing.h>
@@ -277,6 +278,10 @@ void Shutdown()
         pblocktree.reset();
     }
     g_wallet_init_interface.Stop();
+
+    if (g_mmr) {
+        g_mmr.reset();
+    }
 
 #if ENABLE_ZMQ
     if (pzmqNotificationInterface) {
@@ -1438,6 +1443,8 @@ bool AppInitMain()
     int64_t nCoinDBCache = std::min(nTotalCache / 2, (nTotalCache / 4) + (1 << 23)); // use 25%-50% of the remainder for disk cache
     nCoinDBCache = std::min(nCoinDBCache, nMaxCoinsDBCache << 20); // cap total coins db cache
     nTotalCache -= nCoinDBCache;
+    int64_t nMMRDBCache = std::min(nTotalCache / 3, (nTotalCache / 4) + (1 << 23)); // use 25%-33% of the remainder for disk cache
+    nTotalCache -= nMMRDBCache;
     nCoinCacheUsage = nTotalCache; // the rest goes to in-memory cache
     int64_t nMempoolSizeMax = gArgs.GetArg("-maxmempool", DEFAULT_MAX_MEMPOOL_SIZE) * 1000000;
     LogPrintf("Cache configuration:\n");
@@ -1703,6 +1710,9 @@ bool AppInitMain()
         chain_active_height = chainActive.Height();
     }
     LogPrintf("nBestHeight = %d\n", chain_active_height);
+
+    g_mmr = MakeUnique<MMR>(MakeUnique<MMRDB>(nMMRDBCache, false, true));
+    g_mmr->CatchUp();
 
     if (gArgs.GetBoolArg("-listenonion", DEFAULT_LISTEN_ONION))
         StartTorControl();

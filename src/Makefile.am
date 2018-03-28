@@ -118,6 +118,7 @@ BITCOIN_CORE_H = \
   memusage.h \
   merkleblock.h \
   miner.h \
+  mmr.h \
   net.h \
   net_processing.h \
   netaddress.h \
@@ -162,6 +163,7 @@ BITCOIN_CORE_H = \
   ui_interface.h \
   undo.h \
   util.h \
+  utilmath.h \
   utilmoneystr.h \
   utiltime.h \
   validation.h \
@@ -209,6 +211,7 @@ libbitcoin_server_a_SOURCES = \
   dbwrapper.cpp \
   merkleblock.cpp \
   miner.cpp \
+  mmr.cpp \
   net.cpp \
   net_processing.cpp \
   noui.cpp \
@@ -347,6 +350,7 @@ libbitcoin_common_a_SOURCES = \
   script/ismine.cpp \
   script/sign.cpp \
   script/standard.cpp \
+  utilmath.cpp \
   warnings.cpp \
   $(BITCOIN_CORE_H)
 

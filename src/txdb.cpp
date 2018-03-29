@@ -22,6 +22,7 @@ static const char DB_COIN = 'C';
 static const char DB_COINS = 'c';
 static const char DB_BLOCK_FILES = 'f';
 static const char DB_TXINDEX = 't';
+static const char DB_TXINDEX_BLOCK = 'T';
 static const char DB_BLOCK_INDEX = 'b';
 
 static const char DB_BEST_BLOCK = 'B';
@@ -471,23 +472,41 @@ static void WriteTxIndexMigrationBatches(TxIndexDB& newdb, CBlockTreeDB& olddb,
     // Sync new DB changes to disk before deleting from old DB.
     newdb.WriteBatch(batch_newdb, /*fSync=*/ true);
     olddb.WriteBatch(batch_olddb);
+    olddb.CompactRange(begin_key, end_key);
 
     batch_newdb.Clear();
     batch_olddb.Clear();
-
-    newdb.CompactRange(begin_key, end_key);
-    olddb.CompactRange(begin_key, end_key);
 }
 
-bool TxIndexDB::MigrateData(CBlockTreeDB& block_tree_db, const uint256& block_hash)
+bool TxIndexDB::MigrateData(CBlockTreeDB& block_tree_db, const uint256& tip_hash)
 {
     // The prior implementation of txindex was always in sync with block index
-    // and presence was indicated with a boolean DB flag. The flag signals
-    // whether any txindex data is present in the block_tree_db. If the flag is
-    // not set, either the txindex did not exist or was already migrated.
-    bool f_migrate_index = false;
-    block_tree_db.ReadFlag("txindex", f_migrate_index);
-    if (!f_migrate_index) {
+    // and presence was indicated with a boolean DB flag. If the flag is set,
+    // this means the txindex from a previous version is valid and in sync with
+    // the chain tip. The first step of the migration is to unset the flag and
+    // write the chain hash to a separate key, DB_TXINDEX_BLOCK. After that, the
+    // index entries are copied over in batches to the new database. Finally,
+    // DB_TXINDEX_BLOCK is erased from the old database and the block hash is
+    // written to the new database.
+    //
+    // Unsetting the boolean flag ensures that if the node is downgraded to a
+    // previous version, it will not see a corrupted, partially migrated index
+    // -- it will see that the txindex is disabled. When the node is upgraded
+    // again, the migration will pick up where it left off and sync to the block
+    // with hash DB_TXINDEX_BLOCK.
+    bool f_legacy_flag = false;
+    block_tree_db.ReadFlag("txindex", f_legacy_flag);
+    if (f_legacy_flag) {
+        if (!block_tree_db.Write(DB_TXINDEX_BLOCK, tip_hash)) {
+            return error("%s: cannot write block indicator", __func__);
+        }
+        if (!block_tree_db.WriteFlag("txindex", false)) {
+            return error("%s: cannot write block index db flag", __func__);
+        }
+    }
+
+    uint256 block_hash;
+    if (!block_tree_db.Read(DB_TXINDEX_BLOCK, block_hash)) {
         return true;
     }
 
@@ -548,9 +567,11 @@ bool TxIndexDB::MigrateData(CBlockTreeDB& block_tree_db, const uint256& block_ha
     }
 
     // If these final DB batches complete the migration, write the best block
-    // hash marker to signal that the new database is fully caught up to that
-    // point in the blockchain.
+    // hash marker to the new database and delete from the old one. This signals
+    // that the former is fully caught up to that point in the blockchain and
+    // that all txindex entries have been removed from the latter.
     if (!interrupted) {
+        batch_olddb.Erase(DB_TXINDEX_BLOCK);
         batch_newdb.Write(DB_BEST_BLOCK, block_hash);
     }
 
@@ -564,9 +585,6 @@ bool TxIndexDB::MigrateData(CBlockTreeDB& block_tree_db, const uint256& block_ha
     }
 
     uiInterface.ShowProgress("", 100, false);
-    if (!block_tree_db.WriteFlag("txindex", false)) {
-        return error("%s: cannot write block index db flag", __func__);
-    }
 
     LogPrintf("[DONE].\n");
     return true;

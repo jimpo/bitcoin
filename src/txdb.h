@@ -142,7 +142,7 @@ public:
 
     /// Migrate txindex data from the block tree DB, where it may be for older nodes that have not
     /// been upgraded yet to the new database.
-    bool MigrateData(CBlockTreeDB& block_tree_db, const uint256& block_hash);
+    bool MigrateData(CBlockTreeDB& block_tree_db, const uint256& tip_hash);
 };
 
 #endif // BITCOIN_TXDB_H

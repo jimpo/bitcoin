@@ -20,60 +20,60 @@ BOOST_AUTO_TEST_CASE(mmmr_sanity_test)
     uint256 root_hash1 = mmmr.RootHash();
     BOOST_TEST_MESSAGE("Root hash: " << root_hash1.GetHex());
 
-    std::vector<MMMR::Leaf> leaves(255);
+    std::vector<uint256> hashes;
+    hashes.reserve(255);
+    for (uint i = 0; i < 255; i++) {
+        BaseHashWriter<CSHA256> hash_writer(SER_GETHASH, 0);
+        hash_writer << i;
+        hashes.push_back(hash_writer.GetHash());
+    }
 
     // Add the first 127 leaves.
     for (uint i = 0; i < 127; i++) {
-        CDataStream data(SER_NETWORK, 0);
-        data << i;
-
-        leaves[i] = mmmr.Insert(data);
+        mmmr.Append({hashes[i]});
     }
     uint256 root_hash2 = mmmr.RootHash();
 
     // Add 128 more leaves.
     for (uint i = 127; i < 255; i++) {
-        CDataStream data(SER_NETWORK, 0);
-        data << i;
-
-        leaves[i] = mmmr.Insert(data);
+        mmmr.Append({hashes[i]});
     }
     uint256 root_hash3 = mmmr.RootHash();
 
     // Remove leaves one by one in forward starting from the front.
     for (uint i = 0; i < 255; i++) {
-        mmmr.Remove({leaves[i]});
+        mmmr.Remove({i});
     }
     uint256 root_hash4 = mmmr.RootHash();
 
     // Re-add the removed leaves.
     for (uint i = 0; i < 255; i++) {
-        mmmr.UndoRemove({leaves[i]});
+        mmmr.Insert({{i, hashes[i]}});
     }
     uint256 root_hash5 = mmmr.RootHash();
     BOOST_CHECK(root_hash3 == root_hash5);
 
     // Remove leaves one by one in reverse order from the back.
     for (uint i = 0; i < 255; i++) {
-        mmmr.Remove({leaves[255 - i - 1]});
+        mmmr.Remove({255 - i - 1});
     }
     uint256 root_hash6 = mmmr.RootHash();
     BOOST_CHECK(root_hash4 == root_hash6);
 
     // Re-add the removed leaves.
     for (uint i = 0; i < 255; i++) {
-        mmmr.UndoRemove({leaves[255 - i - 1]});
+        mmmr.Insert({{255 - i - 1, hashes[255 - i - 1]}});
     }
     uint256 root_hash7 = mmmr.RootHash();
     BOOST_CHECK(root_hash5 == root_hash7);
 
     // Rewind to index 127.
-    mmmr.RewindInsert(127);
+    mmmr.Rewind(128);
     uint256 root_hash8 = mmmr.RootHash();
     BOOST_CHECK(root_hash2 == root_hash8);
 
     // Rewind to index 0.
-    mmmr.RewindInsert(0);
+    mmmr.Rewind(127);
     uint256 root_hash9 = mmmr.RootHash();
     BOOST_CHECK(root_hash1 == root_hash9);
 }

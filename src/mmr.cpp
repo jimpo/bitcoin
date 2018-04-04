@@ -6,13 +6,16 @@
 #include <bitset>
 #include <iostream>
 
+#include <chain.h>
 #include <crypto/sha256.h>
 #include <hash.h>
 #include <mmr.h>
+#include <primitives/block.h>
 #include <utilmath.h>
 
 static const char DB_NEXT_INDEX = 'I';
 static const char DB_ENTRIES = 'e';
+static const char DB_TX_INDEX = 'i';
 
 // Assuming there is a peak at index i-1, the number of peaks at indices less
 // than i is given by the number of bits set in the binary representation of i.
@@ -83,6 +86,24 @@ bool MMMRDB::WriteNextIndex(const uint64_t index)
     return Write(DB_NEXT_INDEX, index);
 }
 
+bool MMMRDB::ReadTxIndex(const uint256& tx_hash, uint64_t& index) const
+{
+    auto key = std::make_pair(DB_TX_INDEX, tx_hash);
+    if (Read(key, index)) {
+        return true;
+    }
+    if (!Exists(key)) {
+        index = 0;
+        return true;
+    }
+    return false;
+}
+
+bool MMMRDB::WriteTxIndex(const uint256& tx_hash, const uint64_t index)
+{
+    return Write(std::make_pair(DB_TX_INDEX, tx_hash), index);
+}
+
 bool MMMRDB::ReadEntries(uint64_t index, MMMRDB::EntryList& entry_list) const
 {
     auto key = std::make_pair(DB_ENTRIES, index);
@@ -132,63 +153,61 @@ uint256 MMMR::RootHash() const
     return root.m_hash;
 }
 
-MMMR::Leaf MMMR::Insert(const CDataStream& data)
+void MMMR::Append(std::vector<uint256> hashes)
 {
-    uint64_t index = m_next_index++;
+    for (const uint256& hash : hashes) {
+        uint64_t index = m_next_index++;
+        int peak_height = PeakHeight(index, m_next_index);
 
-    // Leaf hash commits to both data and insertion index.
-    uint256 hash = (BaseHashWriter<CSHA256>(SER_GETHASH, 0) << index << data).GetHash();
+        // Entries are all of the intermediate hashes at each index representing
+        // roots of the merkle subtrees at height i.
+        MMMRDB::EntryList entry_list(peak_height + 1);
 
-    int peak_height = PeakHeight(index, m_next_index);
+        auto& entries = entry_list.m_entries;
+        entries.resize(peak_height + 1);
+        entries[0].m_count = 1;
+        entries[0].m_hash = hash;
 
-    // Entries are all of the intermediate hashes at each index representing
-    // roots of the merkle subtrees at height i.
-    MMMRDB::EntryList entry_list(peak_height + 1);
+        for (int height = 1; height <= peak_height; ++height) {
+            MMMRDB::Entry& left_peak = m_peak_cache.back();
+            MMMRDB::Entry& right_peak = entries[height - 1];
 
-    auto& entries = entry_list.m_entries;
-    entries.resize(peak_height + 1);
-    entries[0].m_count = 1;
-    entries[0].m_hash = hash;
+            // Entry count is the sum of child counts.
+            entries[height].m_count = left_peak.m_count + right_peak.m_count;
 
-    for (int height = 1; height <= peak_height; ++height) {
-        MMMRDB::Entry& left_peak = m_peak_cache.back();
-        MMMRDB::Entry& right_peak = entries[height - 1];
+            // Entry hash is a commitment to child counts and hashes.
+            BaseHashWriter<CSHA256> hash_writer(SER_GETHASH, 0);
+            hash_writer << left_peak << right_peak;
+            entries[height].m_hash = hash_writer.GetHash();
 
-        // Entry count is the sum of child counts.
-        entries[height].m_count = left_peak.m_count + right_peak.m_count;
+            m_peak_cache.pop_back();
+        }
 
-        // Entry hash is a commitment to child counts and hashes.
-        BaseHashWriter<CSHA256> hash_writer(SER_GETHASH, 0);
-        hash_writer << left_peak << right_peak;
-        entries[height].m_hash = hash_writer.GetHash();
+        assert(m_db->WriteEntries(index, entry_list));
 
-        m_peak_cache.pop_back();
+        // The last entry at the last index is a new peak.
+        m_peak_cache.push_back(entries.back());
     }
 
-    assert(m_db->WriteEntries(index, entry_list));
     assert(m_db->WriteNextIndex(m_next_index));
-
-    // The last entry at the last index is a new peak.
-    m_peak_cache.push_back(entries.back());
-
-    return std::make_pair(index, hash);
 }
 
-void MMMR::RewindInsert(uint64_t next_index)
+void MMMR::Rewind(size_t hashes_count)
 {
-    MMMRDB::EntryList empty_entry_list(0);
-    assert(m_db->WriteNextIndex(next_index));
+    uint64_t new_next_index = m_next_index - hashes_count;
+    assert(m_db->WriteNextIndex(new_next_index));
 
-    for (uint64_t index = next_index; index < m_next_index; ++index) {
+    MMMRDB::EntryList empty_entry_list(0);
+    for (uint64_t index = new_next_index; index < m_next_index; ++index) {
         assert(m_db->WriteEntries(index, empty_entry_list));
     }
 
-    m_next_index = next_index;
+    m_next_index = new_next_index;
 
     uint n_peaks = NumOfPeaksBeforeIndex(m_next_index);
     m_peak_cache.resize(n_peaks);
 
-    uint64_t peak_next_index = next_index;
+    uint64_t peak_next_index = new_next_index;
     for (uint i = 0; i < n_peaks; ++i) {
         uint64_t peak_index = peak_next_index - 1;
 
@@ -200,11 +219,11 @@ void MMMR::RewindInsert(uint64_t next_index)
     }
 }
 
-void MMMR::Remove(std::vector<MMMR::Leaf> leaves)
+void MMMR::Remove(std::vector<uint64_t> indices)
 {
-    for (uint i = 0; i < leaves.size(); ++i) {
-        uint64_t leaf_index = leaves[i].first;
-        const uint256& hash = leaves[i].second;
+    std::sort(indices.begin(), indices.end());
+    for (uint i = 0; i < indices.size(); ++i) {
+        uint64_t leaf_index = indices[i];
 
         uint peak_height = PeakHeight(leaf_index, m_next_index);
 
@@ -221,11 +240,7 @@ void MMMR::Remove(std::vector<MMMR::Leaf> leaves)
             break;
 
         case 1:
-            if (leaf_entry.m_hash == hash) {
-                leaf_entry.Clear();
-            } else {
-                // Log that the hash was incorrect or delay an error or something
-            }
+            leaf_entry.Clear();
             break;
 
         default:
@@ -275,8 +290,9 @@ void MMMR::Remove(std::vector<MMMR::Leaf> leaves)
     }
 }
 
-void MMMR::UndoRemove(std::vector<MMMR::Leaf> leaves)
+void MMMR::Insert(std::vector<std::pair<uint64_t, uint256>> leaves)
 {
+    std::sort(leaves.begin(), leaves.end());
     for (uint i = 0; i < leaves.size(); ++i) {
         uint64_t leaf_index = leaves[i].first;
         const uint256& hash = leaves[i].second;
@@ -350,4 +366,105 @@ void MMMR::UndoRemove(std::vector<MMMR::Leaf> leaves)
         int peak_cache_idx = NumOfPeaksBeforeIndex(index + 1) - 1;
         m_peak_cache[peak_cache_idx] = right_entry_list.m_entries.back();
     }
+}
+
+bool MMMR::GetAppendHashes(const CBlock& block, std::vector<uint256>& hashes) const
+{
+    uint64_t index = NextIndex();
+    for (const CTransactionRef& tx : block.vtx) {
+        for (size_t i = 0; i < tx->vout.size(); i++) {
+            BaseHashWriter<CSHA256> hash_writer(SER_GETHASH, 0);
+            hash_writer
+                << index
+                << COutPoint(tx->GetHash(), i)
+                << tx->vout[i];
+            hashes.push_back(hash_writer.GetHash());
+            ++index;
+        }
+    }
+    return true;
+}
+
+bool MMMR::GetRemoveIndices(const CBlock& block, std::vector<uint64_t>& indices) const
+{
+    indices.clear();
+
+    std::map<uint256, uint64_t> tx_index_cache;
+
+    auto tx_it = block.vtx.begin();
+    tx_it++;  // Skip the coinbase tx
+    for (; tx_it != block.vtx.end(); ++tx_it) {
+        const CTransactionRef& tx = *tx_it;
+        for (size_t i = 0; i < tx->vin.size(); i++) {
+            const CTxIn& txin = tx->vin[i];
+
+            uint64_t tx_index;
+            auto it = tx_index_cache.find(txin.prevout.hash);
+            if (it != tx_index_cache.end()) {
+                tx_index = it->second;
+            } else {
+                assert(m_db->ReadTxIndex(txin.prevout.hash, tx_index));
+                tx_index_cache.emplace(txin.prevout.hash, tx_index);
+            }
+
+            indices.push_back(tx_index + i);
+        }
+    }
+
+    return true;
+}
+
+void MMMR::BlockConnected(const std::shared_ptr<const CBlock>& block, const CBlockIndex* block_index,
+                          const std::vector<CTransactionRef>& txn_conflicted)
+{
+    int64_t start_time = GetTimeMicros();
+
+    // Get a total count of inputs and outputs.
+    size_t txin_count = 0;
+    size_t txout_count = 0;
+    for (const CTransactionRef& tx : block->vtx) {
+        txin_count += tx->vin.size();
+        txout_count += tx->vout.size();
+    }
+
+    // Write start indexes of coins by tx hash.
+    uint64_t index = NextIndex();
+    for (const CTransactionRef& tx : block->vtx) {
+        assert(m_db->WriteTxIndex(tx->GetHash(), index));
+        index += tx->vout.size();
+    }
+
+    int64_t part1_time = GetTimeMicros();
+
+    // Remove spent coins from the UTXO set.
+    std::vector<uint64_t> remove_indices;
+    remove_indices.reserve(txin_count);
+    assert(GetRemoveIndices(*block, remove_indices));
+    Remove(std::move(remove_indices));
+
+    int64_t part2_time = GetTimeMicros();
+
+    // Append created coins to the UTXO set.
+    std::vector<uint256> append_hashes;
+    append_hashes.reserve(txout_count);
+    assert(GetAppendHashes(*block, append_hashes));
+    Append(std::move(append_hashes));
+
+    int64_t end_time = GetTimeMicros();
+    LogPrintf("MMMR::BlockConnected: height %d, time %dus, txindex %dus, remove %dus, append %dus\n",
+              block_index->nHeight, end_time - start_time, part1_time - start_time, part2_time - part1_time, end_time - part2_time);
+}
+
+void MMMR::BlockDisconnected(const std::shared_ptr<const CBlock>& block)
+{
+    // Get a total count of inputs and outputs.
+    size_t txin_count = 0;
+    size_t txout_count = 0;
+    for (const CTransactionRef& tx : block->vtx) {
+        txin_count += tx->vin.size();
+        txout_count += tx->vout.size();
+    }
+
+    // Rewind the appended UTXOs.
+    Rewind(txout_count);
 }

@@ -9,6 +9,7 @@
 #include <serialize.h>
 #include <streams.h>
 #include <uint256.h>
+#include <validationinterface.h>
 
 class MMMRDB : public CDBWrapper
 {
@@ -102,14 +103,24 @@ public:
     bool WriteEntries(uint64_t index, const EntryList& entry_list);
     bool ReadNextIndex(uint64_t& index) const;
     bool WriteNextIndex(const uint64_t index);
+    bool ReadTxIndex(const uint256& tx_hash, uint64_t& index) const;
+    bool WriteTxIndex(const uint256& tx_hash, const uint64_t index);
 };
 
-class MMMR
+class MMMR : public CValidationInterface
 {
 private:
     std::unique_ptr<MMMRDB> m_db;
     std::vector<MMMRDB::Entry> m_peak_cache;
     uint64_t m_next_index;
+
+    bool GetRemoveIndices(const CBlock& block, std::vector<uint64_t>& indices) const;
+    bool GetAppendHashes(const CBlock& block, std::vector<uint256>& hashes) const;
+
+protected:
+    void BlockConnected(const std::shared_ptr<const CBlock>& block, const CBlockIndex* block_index,
+                        const std::vector<CTransactionRef>& txn_conflicted) override;
+    void BlockDisconnected(const std::shared_ptr<const CBlock>& block) override;
 
 public:
     typedef std::pair<uint64_t, uint256> Leaf;
@@ -119,10 +130,10 @@ public:
     uint64_t NextIndex() const { return m_next_index; }
 
     uint256 RootHash() const;
-    Leaf Insert(const CDataStream& data);
-    void RewindInsert(uint64_t next_index);
-    void Remove(std::vector<Leaf> leaves);
-    void UndoRemove(std::vector<Leaf> leaves);
+    void Append(std::vector<uint256> hashes);
+    void Rewind(size_t hashes_count);
+    void Remove(std::vector<uint64_t> indices);
+    void Insert(std::vector<std::pair<uint64_t, uint256>> leaves);
 };
 
 #endif // BITCOIN_MMR_H

@@ -23,6 +23,7 @@
 #include <key.h>
 #include <validation.h>
 #include <miner.h>
+#include <mmr.h>
 #include <netbase.h>
 #include <net.h>
 #include <net_processing.h>
@@ -168,6 +169,7 @@ public:
 
 static std::unique_ptr<CCoinsViewErrorCatcher> pcoinscatcher;
 static std::unique_ptr<ECCVerifyHandle> globalVerifyHandle;
+static std::unique_ptr<MMMR> g_mmmr;
 
 static boost::thread_group threadGroup;
 static CScheduler scheduler;
@@ -268,6 +270,11 @@ void Shutdown()
         pblocktree.reset();
     }
     g_wallet_init_interface.Stop();
+
+    if (g_mmmr) {
+        UnregisterValidationInterface(g_mmmr.get());
+        g_mmmr.reset();
+    }
 
 #if ENABLE_ZMQ
     if (pzmqNotificationInterface) {
@@ -1434,6 +1441,8 @@ bool AppInitMain()
     int64_t nCoinDBCache = std::min(nTotalCache / 2, (nTotalCache / 4) + (1 << 23)); // use 25%-50% of the remainder for disk cache
     nCoinDBCache = std::min(nCoinDBCache, nMaxCoinsDBCache << 20); // cap total coins db cache
     nTotalCache -= nCoinDBCache;
+    int64_t nMMMRDBCache = std::min(nTotalCache / 3, (nTotalCache / 4) + (1 << 23)); // use 25%-33% of the remainder for disk cache
+    nTotalCache -= nMMMRDBCache;
     nCoinCacheUsage = nTotalCache; // the rest goes to in-memory cache
     int64_t nMempoolSizeMax = gArgs.GetArg("-maxmempool", DEFAULT_MAX_MEMPOOL_SIZE) * 1000000;
     LogPrintf("Cache configuration:\n");
@@ -1623,6 +1632,11 @@ bool AppInitMain()
         auto txindex_db = MakeUnique<TxIndexDB>(nTxIndexCache, false, fReindex);
         g_txindex = MakeUnique<TxIndex>(std::move(txindex_db));
         g_txindex->Start();
+    }
+
+    if (fReindex) {
+        g_mmmr = MakeUnique<MMMR>(MakeUnique<MMMRDB>(nMMMRDBCache, false, true));
+        RegisterValidationInterface(g_mmmr.get());
     }
 
     // ********************************************************* Step 9: load wallet

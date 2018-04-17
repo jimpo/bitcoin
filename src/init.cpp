@@ -1635,7 +1635,7 @@ bool AppInitMain()
     }
 
     if (fReindex) {
-        g_mmmr = MakeUnique<MMMR>(MakeUnique<MMMRDB>(nMMMRDBCache, false, true));
+        g_mmmr = MakeUnique<MMMR>(MakeUnique<MMMRDB>(nMMMRDBCache, nMMMRDBCache, false, true));
         RegisterValidationInterface(g_mmmr.get());
     }
 

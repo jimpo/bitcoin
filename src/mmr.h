@@ -13,6 +13,9 @@
 
 class MMMRDB : public CDBWrapper
 {
+private:
+    size_t m_max_batch_size = 0;
+
 public:
     struct Entry {
         uint32_t m_count;
@@ -97,14 +100,18 @@ public:
         }
     };
 
-    explicit MMMRDB(size_t cache_size, bool f_memory = false, bool f_wipe = false);
+    explicit MMMRDB(size_t cache_size, size_t max_batch_size, bool f_memory = false, bool f_wipe = false);
 
     bool ReadEntries(uint64_t index, EntryList& entry_list) const;
-    bool WriteEntries(uint64_t index, const EntryList& entry_list);
     bool ReadNextIndex(uint64_t& index) const;
-    bool WriteNextIndex(const uint64_t index);
     bool ReadTxIndex(const uint256& tx_hash, uint64_t& index) const;
-    bool WriteTxIndex(const uint256& tx_hash, const uint64_t index);
+
+    void WriteEntries(CDBBatch& batch, uint64_t index, const EntryList& entry_list);
+    void WriteNextIndex(CDBBatch& batch, const uint64_t index);
+    void WriteTxIndex(CDBBatch& batch, const uint256& tx_hash, const uint64_t index);
+
+    bool FlushBatchIfNecessary(CDBBatch& batch);
+    void CompactEntries(uint64_t start_index, uint64_t end_index);
 };
 
 class MMMR : public CValidationInterface
@@ -116,6 +123,10 @@ private:
 
     bool GetRemoveIndices(const CBlock& block, std::vector<uint64_t>& indices) const;
     bool GetAppendHashes(const CBlock& block, std::vector<uint256>& hashes) const;
+    bool GetTxIndices(const CBlock& block, std::vector<std::pair<uint256, uint64_t>>& tx_indices);
+    bool WriteTxIndices(const CBlock& block);
+
+    uint64_t UpdateParents(CDBBatch& batch, MMMRDB::EntryList& right_entry_list, uint64_t index, uint64_t next_index, uint peak_height);
 
 protected:
     void BlockConnected(const std::shared_ptr<const CBlock>& block, const CBlockIndex* block_index,

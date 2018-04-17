@@ -65,9 +65,19 @@ void MMMRDB::EntryList::Clear(size_t size)
     m_entries.resize(size);
 }
 
-MMMRDB::MMMRDB(size_t cache_size, bool f_memory, bool f_wipe) :
-    CDBWrapper(GetDataDir() / "mmrdb", cache_size, f_memory, f_wipe)
+MMMRDB::MMMRDB(size_t cache_size, size_t max_batch_size, bool f_memory, bool f_wipe) :
+    CDBWrapper(GetDataDir() / "mmrdb", cache_size, f_memory, f_wipe),
+    m_max_batch_size(max_batch_size)
 {}
+
+bool MMMRDB::FlushBatchIfNecessary(CDBBatch& batch)
+{
+    if (batch.SizeEstimate() > m_max_batch_size) {
+        if (!WriteBatch(batch)) return false;
+        batch.Clear();
+    }
+    return true;
+}
 
 bool MMMRDB::ReadNextIndex(uint64_t& index) const
 {
@@ -81,9 +91,9 @@ bool MMMRDB::ReadNextIndex(uint64_t& index) const
     return false;
 }
 
-bool MMMRDB::WriteNextIndex(const uint64_t index)
+void MMMRDB::WriteNextIndex(CDBBatch& batch, const uint64_t index)
 {
-    return Write(DB_NEXT_INDEX, index);
+    batch.Write(DB_NEXT_INDEX, index);
 }
 
 bool MMMRDB::ReadTxIndex(const uint256& tx_hash, uint64_t& index) const
@@ -99,9 +109,9 @@ bool MMMRDB::ReadTxIndex(const uint256& tx_hash, uint64_t& index) const
     return false;
 }
 
-bool MMMRDB::WriteTxIndex(const uint256& tx_hash, const uint64_t index)
+void MMMRDB::WriteTxIndex(CDBBatch& batch, const uint256& tx_hash, const uint64_t index)
 {
-    return Write(std::make_pair(DB_TX_INDEX, tx_hash), index);
+    batch.Write(std::make_pair(DB_TX_INDEX, tx_hash), index);
 }
 
 bool MMMRDB::ReadEntries(uint64_t index, MMMRDB::EntryList& entry_list) const
@@ -120,13 +130,23 @@ bool MMMRDB::ReadEntries(uint64_t index, MMMRDB::EntryList& entry_list) const
     return false;
 }
 
-bool MMMRDB::WriteEntries(uint64_t index, const MMMRDB::EntryList& entry_list)
+void MMMRDB::WriteEntries(CDBBatch& batch, uint64_t index, const MMMRDB::EntryList& entry_list)
 {
     auto key = std::make_pair(DB_ENTRIES, index);
     if (entry_list.Empty()) {
-        return Erase(key);
+        batch.Erase(key);
+    } else {
+        batch.Write(key, entry_list);
     }
-    return Write(key, entry_list);
+}
+
+void MMMRDB::CompactEntries(uint64_t start_index, uint64_t end_index)
+{
+    int64_t start_time = GetTimeMicros();
+    CompactRange(std::make_pair(DB_ENTRIES, start_index),
+                 std::make_pair(DB_ENTRIES, end_index));
+    int64_t end_time = GetTimeMicros();
+    LogPrintf("MMMR compaction time %s us\n", end_time - start_time);
 }
 
 MMMR::MMMR(std::unique_ptr<MMMRDB> db) : m_db(std::move(db))
@@ -155,6 +175,8 @@ uint256 MMMR::RootHash() const
 
 void MMMR::Append(std::vector<uint256> hashes)
 {
+    CDBBatch batch(*m_db);
+
     for (const uint256& hash : hashes) {
         uint64_t index = m_next_index++;
         int peak_height = PeakHeight(index, m_next_index);
@@ -183,25 +205,31 @@ void MMMR::Append(std::vector<uint256> hashes)
             m_peak_cache.pop_back();
         }
 
-        assert(m_db->WriteEntries(index, entry_list));
+        m_db->WriteEntries(batch, index, entry_list);
+        assert(m_db->FlushBatchIfNecessary(batch));
 
         // The last entry at the last index is a new peak.
         m_peak_cache.push_back(entries.back());
     }
 
-    assert(m_db->WriteNextIndex(m_next_index));
+    m_db->WriteNextIndex(batch, m_next_index);
+    assert(m_db->WriteBatch(batch));
 }
 
 void MMMR::Rewind(size_t hashes_count)
 {
+    CDBBatch batch(*m_db);
+
     uint64_t new_next_index = m_next_index - hashes_count;
-    assert(m_db->WriteNextIndex(new_next_index));
+    m_db->WriteNextIndex(batch, new_next_index);
 
     MMMRDB::EntryList empty_entry_list(0);
     for (uint64_t index = new_next_index; index < m_next_index; ++index) {
-        assert(m_db->WriteEntries(index, empty_entry_list));
+        m_db->WriteEntries(batch, index, empty_entry_list);
+        assert(m_db->FlushBatchIfNecessary(batch));
     }
 
+    assert(m_db->WriteBatch(batch));
     m_next_index = new_next_index;
 
     uint n_peaks = NumOfPeaksBeforeIndex(m_next_index);
@@ -219,21 +247,85 @@ void MMMR::Rewind(size_t hashes_count)
     }
 }
 
+uint64_t MMMR::UpdateParents(CDBBatch& batch, MMMRDB::EntryList& right_entry_list, uint64_t index, uint64_t next_index, uint peak_height)
+{
+    MMMRDB::EntryList left_entry_list(/*capacity=*/peak_height + 1);
+
+    for (uint height = 1; height <= peak_height; ++height) {
+        uint64_t last_index = index;
+        index |= (1ULL << (height - 1));
+
+        if (index == last_index) {
+            // The right entry list stays the same, so no need to flush it
+            // yet. Just load the next left_entry_list.
+            uint64_t left_index = index & ~(1ULL << (height - 1));
+            assert(m_db->ReadEntries(left_index, left_entry_list));
+
+        } else {
+            // The index has moved right, so move what is currently the
+            // right side to the left side for this iteration.
+            uint64_t left_index = last_index;
+            std::swap(left_entry_list.m_entries, right_entry_list.m_entries);
+            m_db->WriteEntries(batch, left_index, left_entry_list);
+            assert(m_db->FlushBatchIfNecessary(batch));
+
+            // If the next_index to be modified is lower, then it is guaranteed to share this entry.
+            // In this case, we can skip forward one iteration and let the next loop update the
+            // parent entries.
+            if (next_index < index) {
+                return index;
+            }
+
+            assert(m_db->ReadEntries(index, right_entry_list));
+        }
+
+        MMMRDB::Entry& left_entry = left_entry_list.m_entries[height - 1];
+        MMMRDB::Entry& right_entry = right_entry_list.m_entries[height - 1];
+        MMMRDB::Entry& parent_entry = right_entry_list.m_entries[height];
+
+        if (left_entry.m_count == 0 && right_entry.m_count == 0) {
+            parent_entry.Clear();
+        } else if (left_entry.m_count == 0 && right_entry.m_count == 1) {
+            parent_entry = right_entry;
+        } else if (left_entry.m_count == 1 && right_entry.m_count == 0) {
+            parent_entry = left_entry;
+        } else {
+            parent_entry.m_count = left_entry.m_count + right_entry.m_count;
+            BaseHashWriter<CSHA256> hash_writer(SER_GETHASH, 0);
+            hash_writer << left_entry << right_entry;
+            parent_entry.m_hash = hash_writer.GetHash();
+        }
+    }
+
+    m_db->WriteEntries(batch, index, right_entry_list);
+    assert(m_db->FlushBatchIfNecessary(batch));
+
+    int peak_cache_idx = NumOfPeaksBeforeIndex(index + 1) - 1;
+    m_peak_cache[peak_cache_idx] = right_entry_list.m_entries.back();
+
+    return index;
+}
+
 void MMMR::Remove(std::vector<uint64_t> indices)
 {
+    if (indices.empty()) return;
+
+    CDBBatch batch(*m_db);
+
     std::sort(indices.begin(), indices.end());
+
+    uint64_t min_index = indices.front();
+    uint64_t max_index = min_index; // This is a placeholder value that gets overwritten in the loop below;
+
     for (uint i = 0; i < indices.size(); ++i) {
-        uint64_t leaf_index = indices[i];
+        uint64_t index = indices[i];
 
-        uint peak_height = PeakHeight(leaf_index, m_next_index);
+        uint peak_height = PeakHeight(index, m_next_index);
+        MMMRDB::EntryList entry_list(/*capacity=*/peak_height + 1);
 
-        uint64_t index = leaf_index;
-        MMMRDB::EntryList left_entry_list(/*capacity=*/peak_height + 1);
-        MMMRDB::EntryList right_entry_list(/*capacity=*/peak_height + 1);
+        assert(m_db->ReadEntries(index, entry_list));
 
-        assert(m_db->ReadEntries(index, right_entry_list));
-
-        MMMRDB::Entry& leaf_entry = right_entry_list.m_entries[0];
+        MMMRDB::Entry& leaf_entry = entry_list.m_entries[0];
         switch (leaf_entry.m_count) {
         case 0:
             // Already removed
@@ -248,64 +340,35 @@ void MMMR::Remove(std::vector<uint64_t> indices)
             assert(false);
         }
 
-        for (uint height = 1; height <= peak_height; ++height) {
-            uint64_t last_index = index;
-            index |= (1ULL << (height - 1));
-
-            if (index == last_index) {
-                // The right entry list stays the same, so no need to flush it
-                // yet. Just load the next left_entry_list.
-                uint64_t left_index = index & ~(1ULL << (height - 1));
-                assert(m_db->ReadEntries(left_index, left_entry_list));
-            } else {
-                // The index has moved right, so move what is currently the
-                // right side to the left side for this iteration.
-                uint64_t left_index = last_index;
-                std::swap(left_entry_list.m_entries, right_entry_list.m_entries);
-                assert(m_db->WriteEntries(left_index, left_entry_list));
-                assert(m_db->ReadEntries(index, right_entry_list));
-            }
-
-            MMMRDB::Entry& left_entry = left_entry_list.m_entries[height - 1];
-            MMMRDB::Entry& right_entry = right_entry_list.m_entries[height - 1];
-            MMMRDB::Entry& parent_entry = right_entry_list.m_entries[height];
-
-            if (left_entry.m_count == 0 && right_entry.m_count == 0) {
-                parent_entry.Clear();
-            } else if (left_entry.m_count == 0 && right_entry.m_count == 1) {
-                parent_entry = right_entry;
-            } else if (left_entry.m_count == 1 && right_entry.m_count == 0) {
-                parent_entry = left_entry;
-            } else {
-                parent_entry.m_count = left_entry.m_count + right_entry.m_count;
-                BaseHashWriter<CSHA256> hash_writer(SER_GETHASH, 0);
-                hash_writer << left_entry << right_entry;
-                parent_entry.m_hash = hash_writer.GetHash();
-            }
-        }
-
-        assert(m_db->WriteEntries(index, right_entry_list));
-        int peak_cache_idx = NumOfPeaksBeforeIndex(index + 1) - 1;
-        m_peak_cache[peak_cache_idx] = right_entry_list.m_entries.back();
+        const uint64_t next_index = i + 1 < indices.size() ? indices[i + 1] : m_next_index;
+        max_index = UpdateParents(batch, entry_list, index, next_index, peak_height);
     }
+
+    assert(m_db->WriteBatch(batch));
+    // m_db->CompactEntries(min_index, max_index);
 }
 
 void MMMR::Insert(std::vector<std::pair<uint64_t, uint256>> leaves)
 {
+    if (leaves.empty()) return;
+
+    CDBBatch batch(*m_db);
+
     std::sort(leaves.begin(), leaves.end());
+
+    uint64_t min_index = leaves.front().first;
+    uint64_t max_index = min_index; // This is a placeholder value that gets overwritten in the loop below;
+
     for (uint i = 0; i < leaves.size(); ++i) {
-        uint64_t leaf_index = leaves[i].first;
+        uint64_t index = leaves[i].first;
         const uint256& hash = leaves[i].second;
 
-        uint peak_height = PeakHeight(leaf_index, m_next_index);
+        uint peak_height = PeakHeight(index, m_next_index);
 
-        uint64_t index = leaf_index;
-        MMMRDB::EntryList left_entry_list(/*capacity=*/peak_height + 1);
-        MMMRDB::EntryList right_entry_list(/*capacity=*/peak_height + 1);
+        MMMRDB::EntryList entry_list(/*capacity=*/peak_height + 1);
+        assert(m_db->ReadEntries(index, entry_list));
 
-        assert(m_db->ReadEntries(index, right_entry_list));
-
-        MMMRDB::Entry& leaf_entry = right_entry_list.m_entries[0];
+        MMMRDB::Entry& leaf_entry = entry_list.m_entries[0];
         switch (leaf_entry.m_count) {
         case 0:
             // Re-add the hash
@@ -326,46 +389,12 @@ void MMMR::Insert(std::vector<std::pair<uint64_t, uint256>> leaves)
             assert(false);
         }
 
-        for (uint height = 1; height <= peak_height; ++height) {
-            uint64_t last_index = index;
-            index |= (1ULL << (height - 1));
-
-            if (index == last_index) {
-                // The right entry list stays the same, so no need to flush it
-                // yet. Just load the next left_entry_list.
-                uint64_t left_index = index & ~(1ULL << (height - 1));
-                assert(m_db->ReadEntries(left_index, left_entry_list));
-            } else {
-                // The index has moved right, so move what is currently the
-                // right side to the left side for this iteration.
-                uint64_t left_index = last_index;
-                std::swap(left_entry_list.m_entries, right_entry_list.m_entries);
-                assert(m_db->WriteEntries(left_index, left_entry_list));
-                assert(m_db->ReadEntries(index, right_entry_list));
-            }
-
-            MMMRDB::Entry& left_entry = left_entry_list.m_entries[height - 1];
-            MMMRDB::Entry& right_entry = right_entry_list.m_entries[height - 1];
-            MMMRDB::Entry& parent_entry = right_entry_list.m_entries[height];
-
-            if (left_entry.m_count == 0 && right_entry.m_count == 0) {
-                parent_entry.Clear();
-            } else if (left_entry.m_count == 0 && right_entry.m_count == 1) {
-                parent_entry = right_entry;
-            } else if (left_entry.m_count == 1 && right_entry.m_count == 0) {
-                parent_entry = left_entry;
-            } else {
-                parent_entry.m_count = left_entry.m_count + right_entry.m_count;
-                BaseHashWriter<CSHA256> hash_writer(SER_GETHASH, 0);
-                hash_writer << left_entry << right_entry;
-                parent_entry.m_hash = hash_writer.GetHash();
-            }
-        }
-
-        assert(m_db->WriteEntries(index, right_entry_list));
-        int peak_cache_idx = NumOfPeaksBeforeIndex(index + 1) - 1;
-        m_peak_cache[peak_cache_idx] = right_entry_list.m_entries.back();
+        const uint64_t next_index = i + 1 < leaves.size() ? leaves[i + 1].first : m_next_index;
+        max_index = UpdateParents(batch, entry_list, index, next_index, peak_height);
     }
+
+    assert(m_db->WriteBatch(batch));
+    // m_db->CompactEntries(min_index, max_index);
 }
 
 bool MMMR::GetAppendHashes(const CBlock& block, std::vector<uint256>& hashes) const
@@ -414,6 +443,23 @@ bool MMMR::GetRemoveIndices(const CBlock& block, std::vector<uint64_t>& indices)
     return true;
 }
 
+bool MMMR::WriteTxIndices(const CBlock& block)
+{
+    CDBBatch batch(*m_db);
+
+    uint64_t index = NextIndex();
+    for (const CTransactionRef& tx : block.vtx) {
+        m_db->WriteTxIndex(batch, tx->GetHash(), index);
+        index += tx->vout.size();
+
+        if (!m_db->FlushBatchIfNecessary(batch)) {
+            return false;
+        }
+    }
+
+    return m_db->WriteBatch(batch);
+}
+
 void MMMR::BlockConnected(const std::shared_ptr<const CBlock>& block, const CBlockIndex* block_index,
                           const std::vector<CTransactionRef>& txn_conflicted)
 {
@@ -428,11 +474,7 @@ void MMMR::BlockConnected(const std::shared_ptr<const CBlock>& block, const CBlo
     }
 
     // Write start indexes of coins by tx hash.
-    uint64_t index = NextIndex();
-    for (const CTransactionRef& tx : block->vtx) {
-        assert(m_db->WriteTxIndex(tx->GetHash(), index));
-        index += tx->vout.size();
-    }
+    assert(WriteTxIndices(*block));
 
     int64_t part1_time = GetTimeMicros();
 

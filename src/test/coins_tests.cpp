@@ -33,6 +33,7 @@ bool operator==(const Coin &a, const Coin &b) {
 class CCoinsViewTest : public CCoinsView
 {
     uint256 hashBestBlock_;
+    uint64_t m_next_index;
     std::map<COutPoint, Coin> map_;
 
 public:
@@ -52,7 +53,7 @@ public:
 
     uint256 GetBestBlock() const override { return hashBestBlock_; }
 
-    bool BatchWrite(CCoinsMap& mapCoins, const uint256& hashBlock) override
+    bool BatchWrite(CCoinsMap& mapCoins, const uint256& hashBlock, const uint64_t next_index) override
     {
         for (CCoinsMap::iterator it = mapCoins.begin(); it != mapCoins.end(); ) {
             if (it->second.flags & CCoinsCacheEntry::DIRTY) {
@@ -67,6 +68,7 @@ public:
         }
         if (!hashBlock.IsNull())
             hashBestBlock_ = hashBlock;
+        m_next_index = next_index;
         return true;
     }
 };
@@ -372,7 +374,7 @@ BOOST_AUTO_TEST_CASE(updatecoins_simulation_test)
             // Update the expected result to know about the new output coins
             assert(tx.vout.size() == 1);
             const COutPoint outpoint(tx.GetHash(), 0);
-            result[outpoint] = Coin(tx.vout[0], height, CTransaction(tx).IsCoinBase());
+            result[outpoint] = Coin(tx.vout[0], height, CTransaction(tx).IsCoinBase(), 0);
 
             // Call UpdateCoins on the top cache
             CTxUndo undo;
@@ -588,7 +590,7 @@ void WriteCoinsViewEntry(CCoinsView& view, CAmount value, char flags)
 {
     CCoinsMap map;
     InsertCoinsMapEntry(map, value, flags);
-    view.BatchWrite(map, {});
+    view.BatchWrite(map, {}, 0);
 }
 
 class SingleEntryCacheTest
@@ -716,7 +718,7 @@ static void CheckAddCoinBase(CAmount base_value, CAmount cache_value, CAmount mo
     try {
         CTxOut output;
         output.nValue = modify_value;
-        test.cache.AddCoin(OUTPOINT, Coin(std::move(output), 1, coinbase), coinbase);
+        test.cache.AddCoin(OUTPOINT, Coin(std::move(output), 1, coinbase, INVALID_COIN_INDEX), coinbase);
         test.cache.SelfTest();
         GetCoinsMapEntry(test.cache.map(), result_value, result_flags);
     } catch (std::logic_error& e) {

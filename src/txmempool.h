@@ -31,6 +31,7 @@ class CBlockIndex;
 
 /** Fake height value used in Coin to signify they are only in the memory pool (since 0.8) */
 static const uint32_t MEMPOOL_HEIGHT = 0x7FFFFFFF;
+static const uint64_t MEMPOOL_INDEX = 0xFFFFFFFFFFFFFFFF;
 
 struct LockPoints
 {

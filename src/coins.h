@@ -19,6 +19,8 @@
 
 #include <unordered_map>
 
+constexpr uint64_t INVALID_COIN_INDEX = 0xFFFFFFFFFFFFFFFF;
+
 /**
  * A UTXO entry.
  *
@@ -38,18 +40,24 @@ public:
     //! at which height this containing transaction was included in the active block chain
     uint32_t nHeight : 31;
 
+    //! absolute index of the coin in the active blockchain
+    uint64_t m_index;
+
     //! construct a Coin from a CTxOut and height/coinbase information.
-    Coin(CTxOut&& outIn, int nHeightIn, bool fCoinBaseIn) : out(std::move(outIn)), fCoinBase(fCoinBaseIn), nHeight(nHeightIn) {}
-    Coin(const CTxOut& outIn, int nHeightIn, bool fCoinBaseIn) : out(outIn), fCoinBase(fCoinBaseIn),nHeight(nHeightIn) {}
+    Coin(CTxOut&& outIn, int nHeightIn, bool fCoinBaseIn, uint64_t index)
+        : out(std::move(outIn)), fCoinBase(fCoinBaseIn), nHeight(nHeightIn), m_index(index) {}
+    Coin(const CTxOut& outIn, int nHeightIn, bool fCoinBaseIn, uint64_t index)
+        : out(outIn), fCoinBase(fCoinBaseIn), nHeight(nHeightIn), m_index(index) {}
 
     void Clear() {
         out.SetNull();
         fCoinBase = false;
         nHeight = 0;
+        m_index = 0;
     }
 
     //! empty constructor
-    Coin() : fCoinBase(false), nHeight(0) { }
+    Coin() : fCoinBase(false), nHeight(0), m_index(0) { }
 
     bool IsCoinBase() const {
         return fCoinBase;
@@ -60,6 +68,7 @@ public:
         assert(!IsSpent());
         uint32_t code = nHeight * 2 + fCoinBase;
         ::Serialize(s, VARINT(code));
+        ::Serialize(s, VARINT(m_index));
         ::Serialize(s, CTxOutCompressor(REF(out)));
     }
 
@@ -69,6 +78,7 @@ public:
         ::Unserialize(s, VARINT(code));
         nHeight = code >> 1;
         fCoinBase = code & 1;
+        ::Unserialize(s, VARINT(m_index));
         ::Unserialize(s, CTxOutCompressor(out));
     }
 
@@ -157,6 +167,8 @@ public:
     //! Retrieve the block hash whose state this CCoinsView currently represents
     virtual uint256 GetBestBlock() const;
 
+    virtual uint64_t GetNextIndex() const;
+
     //! Retrieve the range of blocks that may have been only partially written.
     //! If the database is in a consistent state, the result is the empty vector.
     //! Otherwise, a two-element vector is returned consisting of the new and
@@ -165,7 +177,7 @@ public:
 
     //! Do a bulk modification (multiple Coin changes + BestBlock change).
     //! The passed mapCoins can be modified.
-    virtual bool BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock);
+    virtual bool BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock, const uint64_t next_index);
 
     //! Get a cursor to iterate over the whole state
     virtual CCoinsViewCursor *Cursor() const;
@@ -189,9 +201,10 @@ public:
     bool GetCoin(const COutPoint &outpoint, Coin &coin) const override;
     bool HaveCoin(const COutPoint &outpoint) const override;
     uint256 GetBestBlock() const override;
+    uint64_t GetNextIndex() const override;
     std::vector<uint256> GetHeadBlocks() const override;
     void SetBackend(CCoinsView &viewIn);
-    bool BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock) override;
+    bool BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock, const uint64_t next_index) override;
     CCoinsViewCursor *Cursor() const override;
     size_t EstimateSize() const override;
 };
@@ -211,6 +224,8 @@ protected:
     /* Cached dynamic memory usage for the inner Coin objects. */
     mutable size_t cachedCoinsUsage;
 
+    mutable uint64_t m_next_index;
+
 public:
     CCoinsViewCache(CCoinsView *baseIn);
 
@@ -223,8 +238,9 @@ public:
     bool GetCoin(const COutPoint &outpoint, Coin &coin) const override;
     bool HaveCoin(const COutPoint &outpoint) const override;
     uint256 GetBestBlock() const override;
+    uint64_t GetNextIndex() const override;
     void SetBestBlock(const uint256 &hashBlock);
-    bool BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock) override;
+    bool BatchWrite(CCoinsMap &mapCoins, const uint256 &hashBlock, const uint64_t next_index) override;
     CCoinsViewCursor* Cursor() const override {
         throw std::logic_error("CCoinsViewCache cursor iteration not supported.");
     }
@@ -260,6 +276,8 @@ public:
      * has no effect.
      */
     bool SpendCoin(const COutPoint &outpoint, Coin* moveto = nullptr);
+
+    bool RemoveCoin(const COutPoint &outpoint, Coin* moveto = nullptr);
 
     /**
      * Push the modifications applied to this cache to its base.

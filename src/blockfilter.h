@@ -70,10 +70,12 @@ public:
 };
 
 constexpr uint8_t BASIC_FILTER_FP_RATE = 20;
+constexpr uint8_t EXTENDED_FILTER_FP_RATE = 20;
 
 enum BlockFilterType : uint8_t
 {
     BASIC = 0,
+    EXTENDED = 1,
 };
 
 /**
@@ -129,6 +131,11 @@ public:
         case BlockFilterType::BASIC:
             m_filter = GCSFilter(m_block_hash.GetUint64(0), m_block_hash.GetUint64(1),
                                  BASIC_FILTER_FP_RATE, std::move(encoded_filter));
+            break;
+
+        case BlockFilterType::EXTENDED:
+            m_filter = GCSFilter(m_block_hash.GetUint64(0), m_block_hash.GetUint64(1),
+                                 EXTENDED_FILTER_FP_RATE, std::move(encoded_filter));
             break;
 
         default:

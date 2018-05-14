@@ -230,6 +230,33 @@ static std::set<GCSFilter::Element> BasicFilterElements(const CBlock& block)
     return elements;
 }
 
+static std::set<GCSFilter::Element> ExtendedFilterElements(const CBlock& block)
+{
+    std::set<GCSFilter::Element> elements;
+    for (const CTransactionRef& tx : block.vtx) {
+        if (!tx->IsCoinBase()) {
+            for (const CTxIn& txin : tx->vin) {
+                // Include all data pushes in input scripts.
+                CScript::const_iterator pc = txin.scriptSig.begin();
+                opcodetype opcode_dummy;
+                std::vector<unsigned char> data;
+                while (txin.scriptSig.GetOp(pc, opcode_dummy, data)) {
+                    if (!data.empty()) {
+                        elements.insert(std::move(data));
+                    }
+                }
+
+                // Include all script witnesses.
+                for (const auto& data : txin.scriptWitness.stack) {
+                    elements.insert(data);
+                }
+            }
+        }
+    }
+
+    return elements;
+}
+
 BlockFilter::BlockFilter(BlockFilterType filter_type, const CBlock& block)
     : m_filter_type(filter_type), m_block_hash(block.GetHash())
 {
@@ -237,6 +264,11 @@ BlockFilter::BlockFilter(BlockFilterType filter_type, const CBlock& block)
     case BlockFilterType::BASIC:
         m_filter = GCSFilter(m_block_hash.GetUint64(0), m_block_hash.GetUint64(1),
                              BASIC_FILTER_FP_RATE, BasicFilterElements(block));
+        break;
+
+    case BlockFilterType::EXTENDED:
+        m_filter = GCSFilter(m_block_hash.GetUint64(0), m_block_hash.GetUint64(1),
+                             EXTENDED_FILTER_FP_RATE, ExtendedFilterElements(block));
         break;
 
     default:

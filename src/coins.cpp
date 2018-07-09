@@ -116,10 +116,10 @@ bool CCoinsViewCache::SpendCoin(const COutPoint &outpoint, Coin* moveout) {
 }
 
 bool CCoinsViewCache::RemoveCoin(const COutPoint &outpoint, Coin* moveout) {
+    if (!SpendCoin(outpoint, moveout)) return false;
     if (moveout->m_index != GetNextIndex() - 1) return false;
-    bool result = SpendCoin(outpoint, moveout);
-    if (result) m_next_index--;
-    return result;
+    m_next_index--;
+    return true;
 }
 
 static const Coin coinEmpty;

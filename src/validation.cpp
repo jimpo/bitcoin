@@ -1617,12 +1617,13 @@ DisconnectResult CChainState::DisconnectBlock(const CBlock& block, const CBlockI
 
         // Check that all outputs are available and match the outputs in the block itself
         // exactly.
-        for (size_t o = 0; o < tx.vout.size(); o++) {
+        for (size_t o = tx.vout.size(); o >= 0; o--) {
             if (!tx.vout[o].scriptPubKey.IsUnspendable()) {
                 COutPoint out(hash, o);
                 Coin coin;
                 bool is_spent = view.RemoveCoin(out, &coin);
                 if (!is_spent || tx.vout[o] != coin.out || pindex->nHeight != coin.nHeight || is_coinbase != coin.fCoinBase) {
+                    LogPrintf("Unclean because txout is missing or mismatch\n");
                     fClean = false; // transaction output mismatch
                 }
             }
@@ -1638,6 +1639,7 @@ DisconnectResult CChainState::DisconnectBlock(const CBlock& block, const CBlockI
             for (unsigned int j = tx.vin.size(); j-- > 0;) {
                 const COutPoint &out = tx.vin[j].prevout;
                 int res = ApplyTxInUndo(std::move(txundo.vprevout[j]), view, out);
+                LogPrintf("Unclean because txout is present\n");
                 if (res == DISCONNECT_FAILED) return DISCONNECT_FAILED;
                 fClean = fClean && res != DISCONNECT_UNCLEAN;
             }

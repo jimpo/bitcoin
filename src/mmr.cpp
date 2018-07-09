@@ -437,11 +437,11 @@ void MMR::GetAppendHashes(const CBlock& block, const CCoinsView& coins_view, std
     for (const CTransactionRef& tx : block.vtx) {
         uint256 tx_hash = tx->GetHash();
         for (size_t i = 0; i < tx->vout.size(); i++) {
-            if (coins_view.GetCoin(COutPoint(tx_hash, i), coin)) {
+            //if (coins_view.GetCoin(COutPoint(tx_hash, i), coin)) {
                 BaseHashWriter<CSHA256> hash_writer(SER_GETHASH, 0);
                 hash_writer << coin;
                 hashes.emplace_back(coin.m_index, hash_writer.GetHash());
-            }
+                //}
         }
     }
 }
@@ -472,25 +472,28 @@ void MMR::BlockConnected(const CBlock& block, const CBlockUndo& block_undo, cons
 
     int64_t start_time = GetTimeMicros();
 
-    // Remove spent coins from the UTXO set.
-    std::vector<uint64_t> remove_indices;
-    remove_indices.reserve(txin_count);
-    GetRemoveIndices(block_undo, remove_indices);
-    uint db_remove = Remove(std::move(remove_indices));
-
-    int64_t part1_time = GetTimeMicros();
-
-    // Append created coins to the UTXO set.
+     // Append created coins to the UTXO set.
     std::vector<std::pair<uint64_t, uint256>> append_hashes;
     append_hashes.reserve(txout_count);
     GetAppendHashes(block, coins_view, append_hashes);
     uint db_insert = Insert(std::move(append_hashes));
 
+    int64_t part1_time = GetTimeMicros();
+
+   // Remove spent coins from the UTXO set.
+    std::vector<uint64_t> remove_indices;
+    remove_indices.reserve(txin_count);
+    GetRemoveIndices(block_undo, remove_indices);
+    uint db_remove = Remove(std::move(remove_indices));
+
     m_db->WriteBestBlock(block.GetHash());
 
     int64_t end_time = GetTimeMicros();
-    LogPrintf("MMR::BlockConnected: height %d, count %d, remove %dus, append %dus, txin count %d, txout count %d, db remove %d, db insert %d\n",
-              block_index->nHeight, LeafCount(), part1_time - start_time, end_time - part1_time, txin_count, txout_count, db_remove, db_insert);
+    LogPrintf("MMR::BlockConnected: height %d, count %d, insert %dus, remove %dus, txin count %d, txout count %d, db remove %d, db insert %d\n",
+              block_index->nHeight, LeafCount(),
+              part1_time - start_time, end_time - part1_time,
+              txin_count, txout_count,
+              db_remove, db_insert);
 }
 
 void MMR::BlockDisconnected(const CBlock& block, const CBlockUndo& block_undo)
@@ -544,6 +547,7 @@ void MMR::CatchUp()
 
         CBlock block;
         assert(ReadBlockFromDisk(block, block_index, Params().GetConsensus()));
+        assert(UndoReadFromDisk(block_undo, block_index));
         BlockConnected(block, block_undo, *pcoinsTip, block_index);
 
         block_index = chainActive.Next(block_index);

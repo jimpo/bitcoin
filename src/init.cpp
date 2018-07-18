@@ -11,6 +11,7 @@
 
 #include <addrman.h>
 #include <amount.h>
+#include <blockfilter.h>
 #include <chain.h>
 #include <chainparams.h>
 #include <checkpoints.h>
@@ -1597,6 +1598,29 @@ bool AppInitMain()
     if (ShutdownRequested()) {
         LogPrintf("Shutdown requested. Exiting.\n");
         return false;
+    }
+
+    {
+        LOCK(cs_main);
+
+        for (int i = 0; i <= chainActive.Height(); i++) {
+            CBlockIndex* pindex = chainActive[i];
+
+            CBlock block;
+            if (!ReadBlockFromDisk(block, pindex, Params().GetConsensus())) return false;
+
+            CBlockUndo block_undo;
+            if (pindex->nHeight != 0 && !UndoReadFromDisk(block_undo, pindex)) return false;
+
+            BlockFilter block_filter(BlockFilterType::BASIC, block, block_undo);
+
+            size_t block_size = GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION | SERIALIZE_TRANSACTION_NO_WITNESS);
+            size_t filter_size = GetSerializeSize(block_filter, SER_NETWORK, PROTOCOL_VERSION);
+            uint32_t filter_n = block_filter.GetFilter().GetN();
+
+            LogPrintf("FILTER SIZES: %d,%d,%d,%d\n",
+                      pindex->nHeight, block_size, filter_size, filter_n);
+        }
     }
 
     fs::path est_path = GetDataDir() / FEE_ESTIMATES_FILENAME;

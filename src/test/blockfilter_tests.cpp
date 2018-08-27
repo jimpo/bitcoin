@@ -29,7 +29,7 @@ BOOST_AUTO_TEST_CASE(gcsfilter_test)
         excluded_elements.insert(std::move(element2));
     }
 
-    GCSFilter filter(0, 0, 10, 1 << 10, included_elements);
+    GCSFilter filter({0, 0, 10, 1 << 10}, included_elements);
     for (const auto& element : included_elements) {
         BOOST_CHECK(filter.Match(element));
 

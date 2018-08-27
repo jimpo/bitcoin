@@ -2,6 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <chainparams.h>
 #include <index/txindex.h>
 #include <script/standard.h>
 #include <test/test_bitcoin.h>
@@ -36,6 +37,16 @@ BOOST_FIXTURE_TEST_CASE(txindex_initial_sync, TestChain100Setup)
     while (!txindex.BlockUntilSyncedToCurrentChain()) {
         BOOST_REQUIRE(time_start + timeout_ms > GetTimeMillis());
         MilliSleep(100);
+    }
+
+    // Check that txindex has genesis block transactions.
+    const CBlock& genesis_block = Params().GenesisBlock();
+    for (const auto& txn : genesis_block.vtx) {
+        if (!txindex.FindTx(txn->GetHash(), block_hash, tx_disk)) {
+            BOOST_ERROR("FindTx failed");
+        } else if (tx_disk->GetHash() != txn->GetHash()) {
+            BOOST_ERROR("Read incorrect tx");
+        }
     }
 
     // Check that txindex has all txs that were in the chain before it started.

@@ -38,6 +38,20 @@ public:
                               size_t n_cache_size, bool f_memory = false, bool f_wipe = false);
 
     BlockFilterType GetFilterType() const { return m_filter_type; }
+
+    /** Get a single filter by block. */
+    bool LookupFilter(const CBlockIndex* block_index, BlockFilter& filter_out) const;
+
+    /** Get a single filter header by block. */
+    bool LookupFilterHeader(const CBlockIndex* block_index, uint256& header_out) const;
+
+    /** Get a range of filters between two heights on a chain. */
+    bool LookupFilterRange(int start_height, const CBlockIndex* stop_index,
+                           std::vector<BlockFilter>& filters_out) const;
+
+    /** Get a range of filter hashes between two heights on a chain. */
+    bool LookupFilterHashRange(int start_height, const CBlockIndex* stop_index,
+                               std::vector<uint256>& hashes_out) const;
 };
 
 #endif // BITCOIN_INDEX_BLOCKFILTER_H

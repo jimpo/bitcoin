@@ -2,6 +2,8 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <sstream>
+
 #include <blockfilter.h>
 #include <hash.h>
 #include <primitives/transaction.h>
@@ -217,6 +219,26 @@ bool BlockFilterTypeByName(const std::string& name, BlockFilterType& filter_type
         }
     }
     return false;
+}
+
+const std::vector<BlockFilterType>& AllBlockFilterTypes()
+{
+    static std::vector<BlockFilterType> retval{
+        BlockFilterType::BASIC,
+    };
+    return retval;
+}
+
+std::string ListBlockFilterTypes()
+{
+    std::stringstream ret;
+    bool first = true;
+    for (auto filter_type : AllBlockFilterTypes()) {
+        if (!first) ret << ", ";
+        ret << BlockFilterTypeName(filter_type);
+        first = false;
+    }
+    return ret.str();
 }
 
 static GCSFilter::ElementSet BasicFilterElements(const CBlock& block,

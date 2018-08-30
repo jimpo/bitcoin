@@ -25,6 +25,8 @@ constexpr char DB_FILTER_HEADER = 'r';
 constexpr char DB_BLOCK_HASH = 's';
 constexpr char DB_BLOCK_HEIGHT = 't';
 
+static std::map<BlockFilterType, BlockFilterIndex> g_filter_indexes;
+
 BlockFilterIndex::BlockFilterIndex(BlockFilterType filter_type,
                                    size_t n_cache_size, bool f_memory, bool f_wipe)
     : m_filter_type(filter_type)
@@ -253,4 +255,35 @@ bool BlockFilterIndex::LookupFilterHashRange(int start_height, const CBlockIndex
                                              std::vector<uint256>& hashes_out) const
 {
     return LookupRange(*m_db, m_name, DB_FILTER_HASH, start_height, stop_index, hashes_out);
+}
+
+BlockFilterIndex* GetBlockFilterIndex(BlockFilterType filter_type)
+{
+    auto it = g_filter_indexes.find(filter_type);
+    return it != g_filter_indexes.end() ? &it->second : nullptr;
+}
+
+void ForEachBlockFilterIndex(std::function<void (BlockFilterIndex&)> fn)
+{
+    for (auto& entry : g_filter_indexes) fn(entry.second);
+}
+
+bool InitBlockFilterIndex(BlockFilterType filter_type,
+                          size_t n_cache_size, bool f_memory, bool f_wipe)
+{
+    auto result = g_filter_indexes.emplace(std::piecewise_construct,
+                                           std::forward_as_tuple(filter_type),
+                                           std::forward_as_tuple(filter_type,
+                                                                 n_cache_size, f_memory, f_wipe));
+    return result.second;
+}
+
+bool DestroyBlockFilterIndex(BlockFilterType filter_type)
+{
+    return g_filter_indexes.erase(filter_type);
+}
+
+void DestroyAllBlockFilterIndexes()
+{
+    g_filter_indexes.clear();
 }

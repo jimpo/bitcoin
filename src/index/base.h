@@ -79,8 +79,7 @@ protected:
     virtual const char* GetName() const = 0;
 
 public:
-    /// Destructor interrupts sync thread if running and blocks until it exits.
-    virtual ~BaseIndex();
+    virtual ~BaseIndex() = default;
 
     /// Blocks the current thread until the index is caught up to the current
     /// state of the block chain. This only blocks if the index has gotten in

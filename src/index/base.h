@@ -54,10 +54,10 @@ private:
     /// over and the sync thread exits.
     void ThreadSync();
 
-    /// Write the current chain block locator to the DB.
-    bool WriteBestBlock(const CBlockIndex* block_index);
-
 protected:
+    /// Write the current chain block locator to the DB.
+    virtual bool WriteBestBlock(const CBlockIndex* block_index);
+
     void BlockConnected(const std::shared_ptr<const CBlock>& block, const CBlockIndex* pindex,
                         const std::vector<CTransactionRef>& txn_conflicted) override;
 

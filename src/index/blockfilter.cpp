@@ -25,6 +25,15 @@ constexpr char DB_FILTER_HEADER = 'r';
 constexpr char DB_BLOCK_HASH = 's';
 constexpr char DB_BLOCK_HEIGHT = 't';
 
+constexpr char DB_FILTER_POS = 'P';
+
+constexpr unsigned int MAX_FILE_SIZE = 0x1000000; // 16 MiB
+/** The pre-allocation chunk size for fltr?????.dat files */
+constexpr unsigned int FILE_CHUNK_SIZE = 0x100000; // 1 MiB
+
+typedef std::pair<char, std::pair<char, int>> DBKey;
+typedef std::tuple<uint256, uint256, CDiskBlockPos> DBVal;
+
 static std::map<BlockFilterType, BlockFilterIndex> g_filter_indexes;
 
 BlockFilterIndex::BlockFilterIndex(BlockFilterType filter_type,
@@ -35,8 +44,94 @@ BlockFilterIndex::BlockFilterIndex(BlockFilterType filter_type,
     if (filter_name == "") throw std::invalid_argument("unknown filter_type");
 
     m_name = filter_name + " block filter index";
-    m_db = MakeUnique<BaseIndex::DB>(GetDataDir() / "indexes" / "blockfilter" / filter_name,
-                                     n_cache_size, f_memory, f_wipe);
+
+    fs::path path = GetDataDir() / "indexes" / "blockfilter" / filter_name;
+    fs::create_directories(path);
+
+    m_db = MakeUnique<BaseIndex::DB>(path / "db", n_cache_size, f_memory, f_wipe);
+    m_filter_fileseq = MakeUnique<FlatFileSeq>(std::move(path), "fltr", FILE_CHUNK_SIZE);
+}
+
+bool BlockFilterIndex::Init()
+{
+    if (!m_db->Read(DB_FILTER_POS, m_next_filter_pos)) {
+        m_next_filter_pos.nFile = 210;
+        m_next_filter_pos.nPos = 0;
+    }
+    return BaseIndex::Init();
+}
+
+bool BlockFilterIndex::WriteBestBlock(const CBlockIndex* block_index)
+{
+    if (!m_db->Write(DB_FILTER_POS, m_next_filter_pos)) {
+        return error("%s: Failed to write filter location to DB", __func__);
+    }
+    return BaseIndex::WriteBestBlock(block_index);
+}
+
+bool BlockFilterIndex::ReadFilterFromDisk(const CDiskBlockPos& pos, BlockFilter& filter) const
+{
+    CAutoFile filein(m_filter_fileseq->Open(pos, true), SER_DISK, CLIENT_VERSION);
+    if (filein.IsNull()) {
+        return false;
+    }
+
+    uint256 block_hash;
+    std::vector<unsigned char> encoded_filter;
+    try {
+        filein >> block_hash >> encoded_filter;
+        filter = BlockFilter(GetFilterType(), block_hash, std::move(encoded_filter));
+    }
+    catch (const std::exception& e) {
+        return false;
+    }
+
+    return true;
+}
+
+size_t BlockFilterIndex::WriteFilterToDisk(CDiskBlockPos& pos, const BlockFilter& filter)
+{
+    assert(filter.GetFilterType() == GetFilterType());
+
+    size_t data_size =
+        GetSerializeSize(filter.GetBlockHash(), SER_DISK, CLIENT_VERSION) +
+        GetSerializeSize(filter.GetEncodedFilter(), SER_DISK, CLIENT_VERSION);
+
+    // If writing the filter would overflow the file, flush and move to the next one.
+    if (pos.nPos + data_size > MAX_FILE_SIZE) {
+        CAutoFile last_file(m_filter_fileseq->Open(pos), SER_DISK, CLIENT_VERSION);
+        if (last_file.IsNull()) {
+            LogPrintf("%s: Failed to open filter file %d", __func__, pos.nFile);
+        }
+        if (!TruncateFile(last_file.Get(), pos.nPos)) {
+            LogPrintf("%s: Failed to truncate filter file %d", __func__, pos.nFile);
+            return 0;
+        }
+        if (!FileCommit(last_file.Get())) {
+            LogPrintf("%s: Failed to commit filter file %d", __func__, pos.nFile);
+            return 0;
+        }
+
+        pos.nFile++;
+        pos.nPos = 0;
+    }
+
+    // Pre-allocate sufficient space for filter data.
+    bool out_of_space;
+    m_filter_fileseq->Allocate(pos, data_size, out_of_space);
+    if (out_of_space) {
+        LogPrintf("%s: out of disk space", __func__);
+        return 0;
+    }
+
+    CAutoFile fileout(m_filter_fileseq->Open(pos), SER_DISK, CLIENT_VERSION);
+    if (fileout.IsNull()) {
+        LogPrintf("%s: Failed to open filter file %d", __func__, pos.nFile);
+        return 0;
+    }
+
+    fileout << filter.GetBlockHash() << filter.GetEncodedFilter();
+    return data_size;
 }
 
 bool BlockFilterIndex::WriteBlock(const CBlock& block, const CBlockIndex* pindex)
@@ -67,14 +162,22 @@ bool BlockFilterIndex::WriteBlock(const CBlock& block, const CBlockIndex* pindex
     BlockFilter filter(m_filter_type, block, block_undo);
     std::pair<char, int> height_key(DB_BLOCK_HEIGHT, pindex->nHeight);
 
+    size_t bytes_written = WriteFilterToDisk(m_next_filter_pos, filter);
+    if (bytes_written == 0) return false;
+
     CDBBatch batch(*m_db);
     batch.Write(std::make_pair(DB_FILTER, height_key),
-                std::make_pair(pindex->GetBlockHash(), filter.GetEncodedFilter()));
+                std::make_pair(pindex->GetBlockHash(), m_next_filter_pos));
     batch.Write(std::make_pair(DB_FILTER_HASH, height_key),
                 std::make_pair(pindex->GetBlockHash(), filter.GetHash()));
     batch.Write(std::make_pair(DB_FILTER_HEADER, height_key),
                 std::make_pair(pindex->GetBlockHash(), filter.ComputeHeader(prev_header)));
-    return m_db->WriteBatch(batch);
+    if (!m_db->WriteBatch(batch)) {
+        return false;
+    }
+
+    m_next_filter_pos.nPos += bytes_written;
+    return true;
 }
 
 template <typename T>
@@ -212,12 +315,13 @@ static bool LookupRange(CDBWrapper& db, const std::string& index_name,
 
 bool BlockFilterIndex::LookupFilter(const CBlockIndex* block_index, BlockFilter& filter_out) const
 {
-    std::vector<unsigned char> encoded_filter;
-    if (!LookupOne(*m_db, DB_FILTER, block_index, encoded_filter)) {
+    CDiskBlockPos filter_pos;
+    if (!LookupOne(*m_db, DB_FILTER, block_index, filter_pos)) {
         return false;
     }
-
-    filter_out = BlockFilter(m_filter_type, block_index->GetBlockHash(), std::move(encoded_filter));
+    if (!ReadFilterFromDisk(filter_pos, filter_out)) {
+        return false;
+    }
     return true;
 }
 
@@ -229,22 +333,24 @@ bool BlockFilterIndex::LookupFilterHeader(const CBlockIndex* block_index, uint25
 bool BlockFilterIndex::LookupFilterRange(int start_height, const CBlockIndex* stop_index,
                                          std::vector<BlockFilter>& filters_out) const
 {
-    std::vector<std::vector<unsigned char>> encoded_filters;
-    if (!LookupRange(*m_db, m_name, DB_FILTER, start_height, stop_index, encoded_filters)) {
+    std::vector<CDiskBlockPos> filter_pos;
+    if (!LookupRange(*m_db, m_name, DB_FILTER, start_height, stop_index, filter_pos)) {
         return false;
     }
 
     filters_out.resize(stop_index->nHeight - start_height + 1);
 
     auto it = filters_out.rbegin();
-    auto encoded_filter_it = encoded_filters.rbegin();
+    auto filter_pos_it = filter_pos.rbegin();
     const CBlockIndex* pindex = stop_index;
 
     while (it != filters_out.rend()) {
-        *it = BlockFilter(m_filter_type, pindex->GetBlockHash(), std::move(*encoded_filter_it));
+        if (!ReadFilterFromDisk(*filter_pos_it, *it)) {
+            return false;
+        }
 
         ++it;
-        ++encoded_filter_it;
+        ++filter_pos_it;
         pindex = pindex->pprev;
     }
 

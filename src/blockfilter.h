@@ -125,6 +125,7 @@ public:
     BlockFilter(BlockFilterType filter_type, const CBlock& block, const CBlockUndo& block_undo);
 
     BlockFilterType GetFilterType() const { return m_filter_type; }
+    uint256 GetBlockHash() const { return m_block_hash; }
 
     const GCSFilter& GetFilter() const { return m_filter; }
 

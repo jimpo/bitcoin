@@ -7,6 +7,7 @@
 
 #include <blockfilter.h>
 #include <chain.h>
+#include <flatfile.h>
 #include <index/base.h>
 
 /**
@@ -23,7 +24,17 @@ private:
     std::string m_name;
     std::unique_ptr<BaseIndex::DB> m_db;
 
+    CDiskBlockPos m_next_filter_pos;
+    std::unique_ptr<FlatFileSeq> m_filter_fileseq;
+
+    bool ReadFilterFromDisk(const CDiskBlockPos& pos, BlockFilter& filter) const;
+    size_t WriteFilterToDisk(CDiskBlockPos& pos, const BlockFilter& filter);
+
 protected:
+    bool Init() override;
+
+    bool WriteBestBlock(const CBlockIndex* block_index) override;
+
     bool WriteBlock(const CBlock& block, const CBlockIndex* pindex) override;
 
     bool Rewind(const CBlockIndex* current_tip, const CBlockIndex* new_tip) override;

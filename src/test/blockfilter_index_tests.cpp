@@ -111,6 +111,8 @@ static bool BuildChain(const CBlockIndex* pindex, const CScript& coinbase_script
 
 BOOST_FIXTURE_TEST_CASE(blockfilter_index_initial_sync, TestChain100Setup)
 {
+    g_logger->m_print_to_console = true;
+
     BlockFilterIndex filter_index(BlockFilterType::BASIC, 1 << 20, true);
 
     uint256 last_header;

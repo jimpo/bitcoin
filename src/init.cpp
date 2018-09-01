@@ -1638,8 +1638,8 @@ bool AppInitMain()
 
     // ********************************************************* Step 11: import blocks
 
-    if (!CheckDiskSpace() && !CheckDiskSpace(0, true))
-        return false;
+    if (!CheckDiskSpace(GetDataDir()) && !CheckDiskSpace(GetBlocksDir()))
+        return InitError(_("Error: Disk space is low!"));
 
     // Either install a handler to notify us when genesis activates, or set fHaveGenesis directly.
     // No locking, as this happens before any background thread is started.

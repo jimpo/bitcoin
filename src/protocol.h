@@ -238,6 +238,43 @@ extern const char *GETBLOCKTXN;
  * @since protocol version 70014 as described by BIP 152
  */
 extern const char *BLOCKTXN;
+
+/**
+ * getcfilters requests compact filters for a range of blocks.
+ * Only available with service bit NODE_COMPACT_FILTERS as described by
+ * BIP 157 & 158.
+ */
+extern const char *GETCFILTERS;
+/**
+ * cfilter is a response to a getcfilters request containing a single compact
+ * filter.
+ */
+extern const char *CFILTER;
+/**
+ * getcfheaders requests compact filter headers for a range of blocks.
+ * Only available with service bit NODE_COMPACT_FILTERS as described by
+ * BIP 157 & 158.
+ */
+extern const char *GETCFHEADERS;
+/**
+ * cfheaders is a response to a getcfheaders request containing a vector of
+ * filter headers for each block in the requested range.
+ */
+extern const char *CFHEADERS;
+/**
+ * getcfcheckpt requests evenly spaced compact filter headers, enabling
+ * parallelized download and validation of the headers between them.
+ * Only available with service bit NODE_COMPACT_FILTERS as described by
+ * BIP 157 & 158.
+ */
+extern const char *GETCFCHECKPT;
+/**
+ * cfcheckpt is a response to a getcfcheckpt request containing a vector of
+ * evenly spaced filter headers for blocks on the requested chain.
+ * Only available with service bit NODE_COMPACT_FILTERS as described by
+ * BIP 157 & 158.
+ */
+extern const char *CFCHECKPT;
 };
 
 /* Get a vector of all valid message types (see above) */
@@ -264,6 +301,9 @@ enum ServiceFlags : uint64_t {
     // NODE_XTHIN means the node supports Xtreme Thinblocks
     // If this is turned off then the node will not service nor make xthin requests
     NODE_XTHIN = (1 << 4),
+    // NODE_COMPACT_FILTERS means the node will service basic block filter requests.
+    // See BIP157 and BIP158 for details on how this is implemented.
+    NODE_COMPACT_FILTERS = (1 << 6),
     // NODE_NETWORK_LIMITED means the same as NODE_NETWORK with the limitation of only
     // serving the last 288 (2 day) blocks
     // See BIP159 for details on how this is implemented.

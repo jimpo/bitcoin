@@ -1659,6 +1659,13 @@ bool AppInitMain(InitInterfaces& interfaces)
         GetBlockFilterIndex(filter_type)->Start();
     }
 
+    bool cfilters_enabled = std::find(g_enabled_filter_types.begin(),
+                                      g_enabled_filter_types.end(),
+                                      BlockFilterType::BASIC) != g_enabled_filter_types.end();
+    if (cfilters_enabled) {
+        nLocalServices = ServiceFlags(nLocalServices | NODE_COMPACT_FILTERS);
+    }
+
     // ********************************************************* Step 9: load wallet
     for (const auto& client : interfaces.chain_clients) {
         if (!client->load()) {
